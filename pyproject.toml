@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tender-analyzer"
 version = "0.1.0"
 description = "Tender documents analyzer"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["tender-assistant-skill/src"]
