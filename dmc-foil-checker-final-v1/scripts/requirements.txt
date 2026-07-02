@@ -1,0 +1,18 @@
+# dmc-foil-checker dependencies
+#
+# All self-contained wheels — no system libraries required. This matters on
+# locked-down / air-gapped corporate hosts where you cannot apt-install things.
+#
+# zxing-cpp ships the barcode engine inside the wheel (NO libdmtx needed).
+# opencv-python-headless avoids the GUI/X11 deps of full opencv.
+
+zxing-cpp>=2.2.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# OPTIONAL fallback decoder. Only useful if the host ALSO has the system
+# library libdmtx0 installed (Debian/Ubuntu: apt-get install libdmtx0).
+# The skill works fine without it; it just catches a few extra hard codes.
+# Uncomment to enable:
+# pylibdmtx>=0.1.10
