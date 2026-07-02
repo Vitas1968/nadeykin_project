@@ -36,7 +36,7 @@ def _load_document(path: Path):
 
 def _is_heading(paragraph: Paragraph) -> bool:
     style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
-    return bool(re.match(r"^(?:Heading|Заголовок)(?:\b|\s|$)", style_name))
+    return style_name.startswith("Heading") or "Заголовок" in style_name
 
 
 def _iter_body_blocks(document) -> list[tuple[str, Any]]:
@@ -58,9 +58,7 @@ def _extract_cell_text(cell) -> str:
             if paragraph_text:
                 parts.append(paragraph_text)
         elif child.tag == qn("w:tbl"):
-            nested_rows = _extract_table_row_texts(Table(child, cell))
-            if nested_rows:
-                parts.extend(nested_rows)
+            continue
     return _normalize_text(" ".join(parts))
 
 
@@ -117,15 +115,6 @@ def _read_docx_content(path: str | Path) -> tuple[list[dict[str, Any]], int]:
         blocks.extend(_extract_table_rows(table, source_path, table_index, current_section))
 
     return blocks, table_index
-
-
-def _extract_table_row_texts(table: Table) -> list[str]:
-    row_texts: list[str] = []
-    for row in table.rows:
-        cell_values = _collect_row_cell_values(row)
-        if cell_values:
-            row_texts.append(" | ".join(cell_values))
-    return row_texts
 
 
 def _extract_table_rows(table: Table, source_path: str, table_index: int, current_section: str | None) -> list[dict[str, Any]]:
