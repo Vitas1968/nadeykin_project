@@ -37,7 +37,7 @@ def _format_float(value: float) -> str:
     if value.is_integer():
         formatted = str(int(value))
     else:
-        formatted = format(value, ".15g").rstrip("0").rstrip(".")
+        formatted = format(value, "f").rstrip("0").rstrip(".")
     if formatted == "-0":
         formatted = "0"
     return formatted
