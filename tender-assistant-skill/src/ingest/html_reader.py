@@ -79,8 +79,6 @@ class HtmlTenderParser(HTMLParser):
         if self.ignore_depth > 0:
             return
         if self.table_depth > 1:
-            if self.in_cell and self.current_cell_parts is not None:
-                self.current_cell_parts.append(data)
             return
         if self.table_depth == 1:
             if self.in_cell and self.current_cell_parts is not None:
