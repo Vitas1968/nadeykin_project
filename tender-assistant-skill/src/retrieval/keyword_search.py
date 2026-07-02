@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for YAML criteria files
+    yaml = None
 
 try:
     from normalize.tender_document import read_tender_path
@@ -116,12 +119,17 @@ def build_search_terms(query: str | None = None, keywords: list[str] | None = No
 
 
 def _find_phrase_position(text: str, phrase: str) -> int:
-    return text.find(phrase)
+    match = re.search(rf"(?<![a-zа-я0-9]){re.escape(phrase)}(?![a-zа-я0-9])", text)
+    return match.start() if match else -1
 
 
 def _find_token_position(text: str, token: str) -> int:
     match = re.search(rf"(?<![a-zа-я0-9]){re.escape(token)}(?![a-zа-я0-9])", text)
     return match.start() if match else -1
+
+
+def _find_substring_position(text: str, term: str) -> int:
+    return text.find(term)
 
 
 def _build_snippet(text: str, position: int, needle_length: int, max_chars: int = 240) -> str:
@@ -140,6 +148,51 @@ def _build_snippet(text: str, position: int, needle_length: int, max_chars: int 
     if len(snippet) <= 3:
         return snippet
     return f"{snippet[: max_chars - 3].rstrip()}..."
+
+
+def make_snippet(text: str, terms: list[dict], max_chars: int = 320) -> str:
+    """
+    Делает короткий фрагмент вокруг первого совпадения.
+    """
+
+    if max_chars < 1:
+        return ""
+
+    original_text = str(text)
+    normalized_text = normalize_for_search(original_text)
+    if not normalized_text:
+        return ""
+
+    phrase_terms: list[str] = []
+    token_terms: list[str] = []
+    for term in terms or []:
+        if not isinstance(term, dict):
+            continue
+        normalized_term = str(term.get("normalized") or "").strip()
+        if not normalized_term:
+            continue
+        kind = str(term.get("kind") or "").strip()
+        if kind == "phrase":
+            phrase_terms.append(normalized_term)
+        elif kind == "token":
+            token_terms.append(normalized_term)
+
+    for normalized_term in phrase_terms:
+        position = _find_phrase_position(normalized_text, normalized_term)
+        if position >= 0:
+            return _build_snippet(normalized_text, position, len(normalized_term), max_chars=max_chars)
+
+    for normalized_term in token_terms:
+        position = _find_token_position(normalized_text, normalized_term)
+        if position < 0:
+            position = _find_substring_position(normalized_text, normalized_term)
+        if position >= 0:
+            return _build_snippet(normalized_text, position, len(normalized_term), max_chars=max_chars)
+
+    fallback_text = _normalize_whitespace(original_text.replace("\r\n", " ").replace("\r", " ").replace("\t", " "))
+    if len(fallback_text) <= max_chars:
+        return fallback_text
+    return f"{fallback_text[: max_chars - 3].rstrip()}..."
 
 
 def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str, Any] | None:
@@ -166,17 +219,11 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
     bonus_score = 0.0
     matched_terms: list[str] = []
     match_reasons: list[str] = []
-    best_position = -1
-    best_needle_length = 0
 
-    def remember_match(raw_term: str | None, reason: str, position: int, needle_length: int) -> None:
-        nonlocal best_position, best_needle_length
+    def remember_match(raw_term: str | None, reason: str) -> None:
         if raw_term is not None and raw_term not in matched_terms:
             matched_terms.append(raw_term)
         match_reasons.append(reason)
-        if position >= 0 and (best_position < 0 or position < best_position):
-            best_position = position
-            best_needle_length = needle_length
 
     for term in terms:
         term_kind = term["kind"]
@@ -188,7 +235,7 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
             if position < 0:
                 continue
             text_score += 5.0
-            remember_match(raw_term, "phrase:text", position, len(normalized_term))
+            remember_match(raw_term, "phrase:text")
             if section_text and normalized_term in section_text:
                 bonus_score += 1.0
                 match_reasons.append("phrase:section")
@@ -200,7 +247,7 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
         if normalized_term in text_token_set:
             position = _find_token_position(normalized_text, normalized_term)
             text_score += 2.0
-            remember_match(raw_term, "token:text", position, len(normalized_term))
+            remember_match(raw_term, "token:text")
             if normalized_term in section_tokens:
                 bonus_score += 0.5
                 match_reasons.append("token:section")
@@ -209,12 +256,12 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
                 match_reasons.append("token:file_name")
             continue
 
-        if len(normalized_term) >= 4:
-            position = _find_token_position(normalized_text, normalized_term)
+        if len(normalized_term) >= 3:
+            position = _find_substring_position(normalized_text, normalized_term)
             if position < 0:
                 continue
             text_score += 1.0
-            remember_match(raw_term, "substring:text", position, len(normalized_term))
+            remember_match(raw_term, "substring:text")
             if normalized_term in section_tokens:
                 bonus_score += 0.5
                 match_reasons.append("token:section")
@@ -225,7 +272,7 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
     if text_score == 0.0:
         return None
 
-    snippet = _build_snippet(normalized_text, best_position, best_needle_length)
+    snippet = make_snippet(str(raw_text), terms, max_chars=320)
     return {
         "score": float(text_score + bonus_score),
         "matched_terms": matched_terms,
@@ -353,6 +400,8 @@ def load_criteria(path: str | Path) -> list[dict]:
     if suffix == ".json":
         data = json.loads(content)
     else:
+        if yaml is None:
+            raise RuntimeError("PyYAML is required to read non-empty YAML criteria files")
         data = yaml.safe_load(content)
 
     if data is None:
