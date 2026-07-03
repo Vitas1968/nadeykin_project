@@ -1,21 +1,39 @@
 from __future__ import annotations
 
 import json
+import gc
+import io
+import os
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
+sys.dont_write_bytecode = True
 
-def _reconfigure_stream(stream: Any) -> None:
+
+def _reconfigure_stream(stream: Any) -> Any:
     reconfigure = getattr(stream, "reconfigure", None)
     if callable(reconfigure):
-        reconfigure(encoding="utf-8", errors="replace")
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+        return stream
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        try:
+            return io.TextIOWrapper(buffer, encoding="utf-8", errors="replace", line_buffering=True)
+        except (OSError, ValueError):
+            return stream
+    return stream
 
 
-_reconfigure_stream(sys.stdout)
-_reconfigure_stream(sys.stderr)
+sys.stdout = _reconfigure_stream(sys.stdout)
+sys.stderr = _reconfigure_stream(sys.stderr)
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -25,6 +43,9 @@ WORK_DIR = REPO_ROOT / "outputs" / "debug" / "regression_check"
 
 PYTHON_TIMEOUT = 30
 REAL_TENDER_TIMEOUT = 180
+CLEANUP_ATTEMPTS = 8
+CLEANUP_INITIAL_DELAY = 0.2
+CLEANUP_MAX_DELAY = 2.0
 
 PRODUCTION_FILES = [
     "tender-assistant-skill/run.py",
@@ -68,6 +89,21 @@ def command_text(args: list[str]) -> str:
     return subprocess.list2cmdline(args)
 
 
+def make_python_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def is_python_command(args: list[str]) -> bool:
+    if not args:
+        return False
+    try:
+        return Path(args[0]).resolve() == Path(sys.executable).resolve()
+    except OSError:
+        return args[0] == sys.executable
+
+
 def _decode_output(value: Any) -> str:
     if value is None:
         return ""
@@ -77,6 +113,7 @@ def _decode_output(value: Any) -> str:
 
 
 def run_command(args: list[str], timeout: int) -> dict[str, Any]:
+    python_command = is_python_command(args)
     result: dict[str, Any] = {
         "command": args,
         "command_text": command_text(args),
@@ -84,6 +121,8 @@ def run_command(args: list[str], timeout: int) -> dict[str, Any]:
         "stdout": "",
         "stderr": "",
         "status": "FAIL",
+        "python_env": "yes" if python_command else "n/a",
+        "text_decoding": "utf-8/errors=replace",
     }
     try:
         completed = subprocess.run(
@@ -93,6 +132,7 @@ def run_command(args: list[str], timeout: int) -> dict[str, Any]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=make_python_env() if python_command else None,
             capture_output=True,
             timeout=timeout,
         )
@@ -280,6 +320,8 @@ def append_command_result(lines: list[str], result: dict[str, Any]) -> None:
     lines.append(f"- command: `{result['command_text']}`")
     lines.append(f"- exit code: {result['exit_code']}")
     lines.append(f"- status: {result['status']}")
+    lines.append(f"- Python subprocess PYTHONDONTWRITEBYTECODE=1: {result['python_env']}")
+    lines.append(f"- stdout/stderr decoding: {result['text_decoding']}")
     if result["stderr"]:
         lines.append("- stderr:")
         lines.append("```")
@@ -287,14 +329,37 @@ def append_command_result(lines: list[str], result: dict[str, Any]) -> None:
         lines.append("```")
 
 
-def run_py_compile(lines: list[str], failures: list[str]) -> None:
-    lines.extend(["## 2. py_compile", ""])
-    for file_path in PRODUCTION_FILES:
-        result = run_command([sys.executable, "-m", "py_compile", file_path], PYTHON_TIMEOUT)
-        append_command_result(lines, result)
-        if result["status"] != "OK":
-            failures.append(f"py_compile failed: {file_path}")
+def run_syntax_check(lines: list[str], failures: list[str]) -> None:
+    lines.extend(["## 2. syntax check", ""])
+    lines.append("- mechanism: read source as UTF-8 and compile(..., 'exec')")
+    lines.append("- .pyc creation: disabled; this check does not write bytecode")
+    lines.append("- files:")
+    if not PRODUCTION_FILES:
+        lines.append("  - none")
+        failures.append("syntax check file list is empty")
         lines.append("")
+        return
+
+    for file_path in PRODUCTION_FILES:
+        path = REPO_ROOT / file_path
+        try:
+            source = path.read_text(encoding="utf-8")
+            compile(source, str(path), "exec")
+        except SyntaxError as exc:
+            lines.append(f"  - `{file_path}`: FAIL ({type(exc).__name__}: {exc})")
+            failures.append(f"syntax check failed: {file_path}")
+        except ValueError as exc:
+            lines.append(f"  - `{file_path}`: FAIL ({type(exc).__name__}: {exc})")
+            failures.append(f"syntax check value error: {file_path}")
+        except UnicodeDecodeError as exc:
+            lines.append(f"  - `{file_path}`: FAIL ({type(exc).__name__}: {exc})")
+            failures.append(f"syntax check decode failed: {file_path}")
+        except OSError as exc:
+            lines.append(f"  - `{file_path}`: FAIL ({type(exc).__name__}: {exc})")
+            failures.append(f"syntax check read failed: {file_path}")
+        else:
+            lines.append(f"  - `{file_path}`: OK")
+    lines.append("")
 
 
 def run_import_check(lines: list[str], failures: list[str]) -> None:
@@ -559,6 +624,70 @@ def run_real_tender_checks(lines: list[str], failures: list[str]) -> None:
         lines.append("")
 
 
+def make_writable(path: Path) -> None:
+    try:
+        if os.name == "nt":
+            os.chmod(path, stat.S_IWRITE)
+        else:
+            current_mode = path.stat().st_mode
+            os.chmod(path, current_mode | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
+def _rmtree_onerror(func: Any, path: str, exc_info: Any) -> None:
+    make_writable(Path(path))
+    func(path)
+
+
+def _rmtree_onexc(func: Any, path: str, exc: BaseException) -> None:
+    make_writable(Path(path))
+    func(path)
+
+
+def remove_tree(path: Path) -> None:
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_rmtree_onexc)
+    else:
+        shutil.rmtree(path, onerror=_rmtree_onerror)
+
+
+def remove_once(path: Path) -> None:
+    make_writable(path)
+    if path.is_dir() and not path.is_symlink():
+        remove_tree(path)
+    else:
+        path.unlink()
+
+
+def safe_remove_path(path: Path) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "path": rel_path(path),
+        "status": "absent",
+        "attempts": 0,
+        "retried": False,
+        "error": "",
+    }
+    for attempt in range(1, CLEANUP_ATTEMPTS + 1):
+        detail["attempts"] = attempt
+        try:
+            if not path.exists():
+                detail["status"] = "absent" if attempt == 1 else "removed"
+                return detail
+            remove_once(path)
+            detail["status"] = "removed"
+            return detail
+        except OSError as exc:
+            detail["status"] = "error"
+            detail["error"] = f"{type(exc).__name__}: {exc}"
+            if attempt >= CLEANUP_ATTEMPTS:
+                return detail
+            detail["retried"] = True
+            gc.collect()
+            time.sleep(min(CLEANUP_INITIAL_DELAY * (2 ** (attempt - 1)), CLEANUP_MAX_DELAY))
+    return detail
+
+
 def cleanup_outputs(
     gitignore_info: dict[str, bool],
     initial_pycache_dirs: set[str],
@@ -568,17 +697,22 @@ def cleanup_outputs(
 ) -> None:
     lines.extend(["## 7. cleanup", ""])
     removed: list[str] = []
+    absent: list[str] = []
+    retry_paths: list[str] = []
+    cleanup_warnings: list[str] = []
     cleanup_errors: list[str] = []
 
     for filename in ARTIFICIAL_FILES:
         path = WORK_DIR / filename
-        if not path.exists():
-            continue
-        try:
-            path.unlink()
-            removed.append(rel_path(path))
-        except OSError as exc:
-            cleanup_errors.append(f"{rel_path(path)}: {type(exc).__name__}: {exc}")
+        detail = safe_remove_path(path)
+        if detail["status"] == "removed":
+            removed.append(detail["path"])
+        elif detail["status"] == "absent":
+            absent.append(detail["path"])
+        else:
+            cleanup_errors.append(f"{detail['path']}: {detail['error']}")
+        if detail["retried"]:
+            retry_paths.append(detail["path"])
 
     try:
         tender_result_paths = sorted(WORK_DIR.glob("tender_*")) if WORK_DIR.exists() else []
@@ -587,14 +721,15 @@ def cleanup_outputs(
         cleanup_errors.append(f"{rel_path(WORK_DIR)} tender_* scan: {type(exc).__name__}: {exc}")
 
     for path in tender_result_paths:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-            removed.append(rel_path(path))
-        except OSError as exc:
-            cleanup_errors.append(f"{rel_path(path)}: {type(exc).__name__}: {exc}")
+        detail = safe_remove_path(path)
+        if detail["status"] == "removed":
+            removed.append(detail["path"])
+        elif detail["status"] == "absent":
+            absent.append(detail["path"])
+        else:
+            cleanup_errors.append(f"{detail['path']}: {detail['error']}")
+        if detail["retried"]:
+            retry_paths.append(detail["path"])
 
     pycache_removed: list[str] = []
     if not gitignore_info["pycache"] or not gitignore_info["pyc"]:
@@ -603,32 +738,54 @@ def cleanup_outputs(
             cleanup_errors.append(f"pycache scan: {scan_error}")
         for file_name in sorted(current_files - initial_pyc_files):
             path = Path(file_name)
-            try:
-                path.unlink()
-                pycache_removed.append(rel_path(path))
-            except OSError as exc:
-                cleanup_errors.append(f"{rel_path(path)}: {type(exc).__name__}: {exc}")
+            detail = safe_remove_path(path)
+            if detail["status"] == "removed":
+                pycache_removed.append(detail["path"])
+            elif detail["status"] == "error":
+                cleanup_errors.append(f"{detail['path']}: {detail['error']}")
+            if detail["retried"]:
+                retry_paths.append(detail["path"])
         for dir_name in sorted(current_dirs - initial_pycache_dirs, reverse=True):
             path = Path(dir_name)
-            try:
-                shutil.rmtree(path)
-                pycache_removed.append(rel_path(path))
-            except OSError as exc:
-                cleanup_errors.append(f"{rel_path(path)}: {type(exc).__name__}: {exc}")
+            detail = safe_remove_path(path)
+            if detail["status"] == "removed":
+                pycache_removed.append(detail["path"])
+            elif detail["status"] == "error":
+                cleanup_errors.append(f"{detail['path']}: {detail['error']}")
+            if detail["retried"]:
+                retry_paths.append(detail["path"])
     else:
         lines.append("- __pycache__/.pyc cleanup: skipped, covered by .gitignore")
 
     report_path = WORK_DIR / "report.md"
     if not gitignore_info["outputs_debug"] and report_path.exists():
-        try:
-            report_path.unlink()
-            removed.append(rel_path(report_path))
-        except OSError as exc:
-            cleanup_errors.append(f"{rel_path(report_path)}: {type(exc).__name__}: {exc}")
+        detail = safe_remove_path(report_path)
+        if detail["status"] == "removed":
+            removed.append(detail["path"])
+        elif detail["status"] == "absent":
+            absent.append(detail["path"])
+        else:
+            cleanup_errors.append(f"{detail['path']}: {detail['error']}")
+        if detail["retried"]:
+            retry_paths.append(detail["path"])
 
     lines.append("- removed temporary/result paths:")
     if removed:
         for item in removed:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - none")
+
+    lines.append("- absent temporary/result paths:")
+    if absent:
+        for item in absent:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - none")
+
+    lines.append("- cleanup retry paths:")
+    if retry_paths:
+        for item in sorted(set(retry_paths)):
             lines.append(f"  - {item}")
     else:
         lines.append("  - none")
@@ -649,6 +806,22 @@ def cleanup_outputs(
     lines.append("- remaining in outputs/debug/regression_check:")
     if remaining:
         for item in remaining:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - none")
+
+    if cleanup_errors and gitignore_info["outputs_debug"]:
+        remaining_errors = []
+        for item in cleanup_errors:
+            if item.startswith("outputs/debug/"):
+                cleanup_warnings.append(item)
+            else:
+                remaining_errors.append(item)
+        cleanup_errors = remaining_errors
+
+    lines.append("- cleanup warnings:")
+    if cleanup_warnings:
+        for item in cleanup_warnings:
             lines.append(f"  - {item}")
     else:
         lines.append("  - none")
@@ -715,6 +888,11 @@ def main() -> int:
             f"- Python executable: `{sys.executable}`",
             f"- Python version: `{sys.version.replace(chr(10), ' ')}`",
             f"- branch: `{branch_result['stdout'].strip() if branch_result['status'] == 'OK' else 'unknown'}`",
+            f"- sys.dont_write_bytecode: {'yes' if sys.dont_write_bytecode else 'no'}",
+            "- console stdout/stderr encoding: utf-8/errors=replace",
+            "- Python subprocess env: PYTHONDONTWRITEBYTECODE=1",
+            "- subprocess stdout/stderr decoding: encoding=utf-8, errors=replace",
+            "- markdown report encoding: utf-8",
             f"- outputs ignored: {'yes' if gitignore_info['outputs'] else 'no'}",
             f"- outputs/debug ignored: {'yes' if gitignore_info['outputs_debug'] else 'no'}",
             f"- __pycache__ ignored: {'yes' if gitignore_info['pycache'] else 'no'}",
@@ -727,7 +905,7 @@ def main() -> int:
         ]
     )
 
-    run_py_compile(lines, failures)
+    run_syntax_check(lines, failures)
     run_import_check(lines, failures)
     run_help_check(lines, failures)
     run_summary_checks(lines, failures)
