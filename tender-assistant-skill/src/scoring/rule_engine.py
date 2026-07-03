@@ -411,9 +411,9 @@ def _resolve_rule_identity(criterion: dict[str, Any]) -> str:
     return "criterion_unknown"
 
 
-def _resolve_rule_metadata(criterion: dict[str, Any]) -> tuple[str, str, str, str]:
+def _resolve_rule_metadata(criterion: dict[str, Any]) -> tuple[str, str | None, str, str]:
     rule_id = _resolve_rule_identity(criterion)
-    block = _first_non_empty_text(criterion, ("block",))
+    block = _first_non_empty_text(criterion, ("block",)) or None
     criterion_text = _first_non_empty_text(criterion, ("criterion",))
     priority = normalize_priority(criterion.get("priority"))
     return rule_id, block, criterion_text, priority
@@ -423,16 +423,14 @@ def _resolve_criterion_matches(criterion: dict[str, Any]) -> list[dict[str, Any]
     return _resolve_matches_from_item(criterion)
 
 
-def _build_rule_comment(status: str, priority: str, confirming_count: int, negative_count: int) -> str:
+def _build_rule_comment(status: str, confirming_count: int) -> str:
     if status == "pass":
-        return f"Подтверждающие сведения найдены: {confirming_count}."
+        return f"Критерий подтвержден найденными фрагментами: {confirming_count}."
     if status == "fail":
-        return f"Найден отрицательный признак: {negative_count}."
+        return "Найден негативный признак по критерию."
     if status == "conflict":
-        return "Есть подтверждающие и отрицательные сведения."
-    if priority == "low":
-        return "Недостаточно данных, но приоритет низкий."
-    return "Недостаточно данных для уверенного вывода."
+        return "Найдены одновременно подтверждающие и рискованные признаки; требуется ручная проверка."
+    return "Подтверждающие фрагменты не найдены."
 
 
 def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]] | None = None) -> dict:
@@ -461,12 +459,12 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
     if status in {"fail", "conflict"}:
         risk = "high"
     elif status == "unknown":
-        risk = "medium"
+        risk = "low" if priority == "low" else "medium"
     else:
         risk = "low"
 
     human_review_required = status in {"fail", "conflict"} or (status == "unknown" and priority != "low")
-    comment = _build_rule_comment(status, priority, len(confirming_evidence), len(negative_evidence))
+    comment = _build_rule_comment(status, len(confirming_evidence))
 
     return {
         "id": rule_id,
