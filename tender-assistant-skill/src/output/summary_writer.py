@@ -210,8 +210,72 @@ def _general_conclusion(
     return "Критичные риски не выявлены, но часть критериев не подтверждена. Требуется выборочная проверка."
 
 
+def _manual_review_text(value: Any) -> str:
+    if value is True:
+        return "да"
+    if value is False:
+        return "нет"
+    return "не указано"
+
+
+def _append_scenario_section(lines: list[str], score_result: dict[str, Any]) -> None:
+    lines.extend(["## 2. Итоговый сценарий", ""])
+
+    scenario_result = score_result.get("scenario_result")
+    if not isinstance(scenario_result, dict):
+        lines.extend(["Итоговый сценарий не рассчитан.", ""])
+        return
+
+    lines.extend(
+        [
+            f"- Сценарий: {_field_text(scenario_result.get('scenario'), '—')}",
+            f"- Рекомендация: {_field_text(scenario_result.get('recommendation'), '—')}",
+            f"- Уверенность: {_field_text(scenario_result.get('confidence'), '—')}",
+            f"- Требуется ручная проверка: {_manual_review_text(scenario_result.get('human_review_required'))}",
+            "",
+        ]
+    )
+
+    blocking_criteria = scenario_result.get("blocking_criteria")
+    if isinstance(blocking_criteria, list):
+        valid_blocking_criteria = [item for item in blocking_criteria if isinstance(item, dict)]
+    else:
+        valid_blocking_criteria = []
+
+    if valid_blocking_criteria:
+        lines.extend(["Блокирующие критерии:", ""])
+        for item in valid_blocking_criteria:
+            lines.append(
+                f"- `{_field_text(item.get('rule_id'), '—')}` — "
+                f"status: {_field_text(item.get('status'), '—')}, "
+                f"risk: {_field_text(item.get('risk'), '—')}, "
+                f"priority: {_field_text(item.get('priority'), '—')}"
+            )
+        lines.append("")
+    else:
+        lines.extend(["Блокирующие критерии не выявлены.", ""])
+
+    reasons = scenario_result.get("reasons")
+    if not isinstance(reasons, list):
+        return
+
+    valid_reasons = [item for item in reasons if isinstance(item, dict)]
+    if not valid_reasons:
+        return
+
+    lines.extend(["Причины:", ""])
+    for item in valid_reasons[:5]:
+        message = _field_text(item.get("message"), "Причина не указана.")
+        rule_id = _field_text(item.get("rule_id"), "")
+        if rule_id:
+            lines.append(f"- {message} (`{rule_id}`)")
+        else:
+            lines.append(f"- {message}")
+    lines.append("")
+
+
 def _append_attention_section(lines: list[str], attention_rules: list[dict[str, Any]]) -> None:
-    lines.extend(["## 3. Критерии, требующие внимания", ""])
+    lines.extend(["## 4. Критерии, требующие внимания", ""])
     if not attention_rules:
         lines.extend(["Критерии, требующие ручной проверки, не выявлены.", ""])
         return
@@ -250,7 +314,7 @@ def _append_attention_section(lines: list[str], attention_rules: list[dict[str, 
 
 
 def _append_pass_section(lines: list[str], pass_rules: list[dict[str, Any]]) -> None:
-    lines.extend(["## 4. Подтверждённые критерии", ""])
+    lines.extend(["## 5. Подтверждённые критерии", ""])
     if not pass_rules:
         lines.extend(["Подтверждённые критерии не выявлены.", ""])
         return
@@ -271,7 +335,7 @@ def _append_pass_section(lines: list[str], pass_rules: list[dict[str, Any]]) -> 
 
 
 def _append_low_unknown_section(lines: list[str], low_unknown_rules: list[dict[str, Any]]) -> None:
-    lines.extend(["## 5. Неподтверждённые низкоприоритетные критерии", ""])
+    lines.extend(["## 6. Неподтверждённые низкоприоритетные критерии", ""])
     if not low_unknown_rules:
         lines.extend(["Низкоприоритетные неподтверждённые критерии не выявлены.", ""])
         return
@@ -317,22 +381,29 @@ def render_summary(score_result: dict[str, Any]) -> str:
         "",
         _general_conclusion(valid_rules, attention_rules),
         "",
-        "## 2. Краткая статистика",
-        "",
-        f"- Входной путь: `{_field_text(score_result.get('input_path'), 'Не указан')}`",
-        f"- Документов: {document_count}",
-        f"- Критериев всего: {criteria_count}",
-        f"- Правил оценено: {rules_count}",
-        f"- Подтверждено: {stats['pass']}",
-        f"- Не подтверждено: {stats['unknown']}",
-        f"- Негативные признаки: {stats['fail']}",
-        f"- Противоречия: {stats['conflict']}",
-        f"- Низкий риск: {stats['risk_low']}",
-        f"- Средний риск: {stats['risk_medium']}",
-        f"- Высокий риск: {stats['risk_high']}",
-        f"- Требуют ручной проверки: {stats['human_review_required']}",
-        "",
     ]
+
+    _append_scenario_section(lines, score_result)
+
+    lines.extend(
+        [
+            "## 3. Краткая статистика",
+            "",
+            f"- Входной путь: `{_field_text(score_result.get('input_path'), 'Не указан')}`",
+            f"- Документов: {document_count}",
+            f"- Критериев всего: {criteria_count}",
+            f"- Правил оценено: {rules_count}",
+            f"- Подтверждено: {stats['pass']}",
+            f"- Не подтверждено: {stats['unknown']}",
+            f"- Негативные признаки: {stats['fail']}",
+            f"- Противоречия: {stats['conflict']}",
+            f"- Низкий риск: {stats['risk_low']}",
+            f"- Средний риск: {stats['risk_medium']}",
+            f"- Высокий риск: {stats['risk_high']}",
+            f"- Требуют ручной проверки: {stats['human_review_required']}",
+            "",
+        ]
+    )
 
     _append_attention_section(lines, attention_rules)
     _append_pass_section(lines, pass_rules)

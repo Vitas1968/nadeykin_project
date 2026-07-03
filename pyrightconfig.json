@@ -1,0 +1,9 @@
+{
+  "include": [
+    "tender-assistant-skill/src",
+    "tender-assistant-skill/run.py"
+  ],
+  "extraPaths": [
+    "tender-assistant-skill/src"
+  ]
+}

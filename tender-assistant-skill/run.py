@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from scoring.rule_engine import evaluate_tender_path
+from scoring.scenario_classifier import classify_scenario
 from output.questions_writer import write_questions
 from output.summary_writer import write_summary
 
@@ -36,6 +37,7 @@ def main() -> int:
         top_k=args.top_k,
         min_score=args.min_score,
     )
+    result["scenario_result"] = classify_scenario(result)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
