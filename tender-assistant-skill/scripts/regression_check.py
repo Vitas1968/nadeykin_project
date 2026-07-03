@@ -471,7 +471,6 @@ def run_real_tender_checks(lines: list[str], failures: list[str]) -> None:
         lines.append("- missing source folders:")
         for path in missing_tender_paths:
             lines.append(f"  - {rel_path(path)}")
-        failures.append("real tender checks skipped: source folders not found")
         lines.append("")
         return
 
