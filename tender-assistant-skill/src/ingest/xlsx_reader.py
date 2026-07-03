@@ -153,7 +153,7 @@ def _build_row_block(
 
 def _load_workbook(path: Path):
     if load_workbook is None:
-        return _load_workbook_fallback(path)
+        return _read_xlsx_fallback(path)
     try:
         return load_workbook(path, read_only=True, data_only=True)
     except Exception as exc:  # pragma: no cover - defensive wrapper around openpyxl
