@@ -214,7 +214,7 @@ git status --short
 - Каждый вывод должен быть связан с evidence.
 - MVP сначала строится детерминированно: readers → normalizer → keyword retrieval → criteria YAML → rule/scoring layer.
 - LLM-классификация — отдельный слой и не должна добавляться в модуль, если задача этого явно не требует.
-- Итоговые сценарии (`not_relevant`, `relevant_llk`, `relevant_dealer`, `need_human_review`) реализовывать только в модуле, для которого это явно поставлено задачей.
+- Итоговые сценарии (`not_relevant`, `relevant_direct`, `relevant_dealer`, `need_human_review`) реализовывать только в модуле, для которого это явно поставлено задачей.
 
 ## Final response format
 
