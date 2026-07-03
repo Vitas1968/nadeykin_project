@@ -22,6 +22,44 @@ except ModuleNotFoundError:
 
 _SUPPORTED_EXTENSIONS = {".yaml", ".yml", ".json"}
 _SEARCH_TOKEN_RE = re.compile(r"[a-zа-я0-9]+(?:[.\-/][a-zа-я0-9]+)*")
+_QUERY_TOKEN_STOPWORDS = {
+    "а",
+    "без",
+    "в",
+    "во",
+    "для",
+    "до",
+    "за",
+    "и",
+    "или",
+    "из",
+    "к",
+    "ко",
+    "на",
+    "не",
+    "о",
+    "об",
+    "от",
+    "по",
+    "при",
+    "с",
+    "со",
+    "у",
+    "дата",
+    "даты",
+    "дате",
+    "дату",
+    "дней",
+    "день",
+    "дня",
+    "рабочих",
+    "календарных",
+    "подписания",
+}
+_QUERY_TOKEN_SHORT_WHITELIST = {
+    "ип",
+    "ту",
+}
 _DASH_TRANSLATION = str.maketrans(
     {
         "‐": "-",
@@ -83,6 +121,18 @@ def tokenize_search_text(text: str) -> list[str]:
     return [match.group(0) for match in _SEARCH_TOKEN_RE.finditer(normalized_text)]
 
 
+def _is_useful_query_token(normalized_token: str) -> bool:
+    if not normalized_token:
+        return False
+    if normalized_token in _QUERY_TOKEN_STOPWORDS:
+        return False
+    if normalized_token.isdigit():
+        return False
+    if len(normalized_token) < 3 and normalized_token not in _QUERY_TOKEN_SHORT_WHITELIST:
+        return False
+    return True
+
+
 def build_search_terms(query: str | None = None, keywords: list[str] | None = None) -> list[dict[str, str]]:
     """
     Возвращает список search terms.
@@ -105,7 +155,8 @@ def build_search_terms(query: str | None = None, keywords: list[str] | None = No
         if normalized_query:
             add_term(query, normalized_query, "phrase")
             for token in tokenize_search_text(query):
-                add_term(token, token, "token")
+                if _is_useful_query_token(token):
+                    add_term(token, token, "token")
 
     if keywords:
         for keyword in keywords:
