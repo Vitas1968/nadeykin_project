@@ -364,7 +364,7 @@ def _is_neutral_rule(rule: dict[str, Any]) -> bool:
     if rule["risk"] == "high":
         return False
 
-    if rule["rule_id"] == MSP_RULE_ID and rule["status"] in {"pass", "fail", "unknown"}:
+    if rule["rule_id"] == MSP_RULE_ID and rule["status"] in {"fail", "unknown"}:
         return True
 
     return rule["priority"] == "low" and rule["status"] == "unknown"
