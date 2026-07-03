@@ -1,0 +1,151 @@
+# Tender Assistant Skill
+
+## 1. Назначение
+
+`tender-assistant-skill` делает первичную deterministic-оценку тендерных документов.
+
+Цель текущего MVP:
+
+- найти подтверждения по критериям из `criteria.yaml`;
+- оценить риски и статусы критериев;
+- сформировать итоговый сценарий обработки тендера;
+- подготовить краткую сводку и вопросы для человека / заказчика.
+
+Каждый вывод должен опираться на найденное `evidence`. Результат pipeline не является финальным юридическим или коммерческим решением: это предварительная машинная проверка для последующей оценки человеком.
+
+## 2. Что делает pipeline
+
+По фактическому коду pipeline выполняет следующие шаги:
+
+1. Читает один файл или папку с документами тендера.
+2. Извлекает текстовые блоки и таблицы из поддерживаемых форматов.
+3. Нормализует документы в общий JSON-подобный формат с `documents`, `blocks`, `full_text`, `stats`, `skipped_files` и `failed_files`.
+4. Ищет `evidence` по критериям через keyword search.
+5. Оценивает критерии через `rule_engine`.
+6. Классифицирует итоговый сценарий через `scenario_classifier`.
+7. Пишет выходные файлы в указанную папку.
+
+Поддерживаемые форматы входных документов: `.docx`, `.html`, `.htm`, `.xlsx`, `.pdf`. При чтении папки неподдерживаемые расширения попадают в `skipped_files` с причиной `unsupported_extension`. `.sign`-файлы не анализируются как содержательные тендерные документы в рамках текущего MVP.
+
+## 3. Основные входы
+
+Основные входы:
+
+- папка или файл с документами тендера, передаётся через `--input`;
+- файл критериев, передаётся через `--criteria`.
+
+Если `--criteria` не указан, `run.py` использует default:
+
+`tender-assistant-skill/config/criteria.yaml`
+
+## 4. Основные выходы
+
+`run.py` создаёт указанную через `--out` папку и пишет в неё:
+
+- `tender_score.json` — полный результат scoring, включая правила, статистику и `scenario_result`;
+- `questions_for_customer.md` — вопросы по критериям, которые требуют ручной проверки или уточнения;
+- `tender_summary.md` — краткая markdown-сводка по тендеру, включая итоговый сценарий, статистику, критерии внимания и найденное `evidence`.
+
+## 5. Итоговые сценарии
+
+Фактический набор сценариев из `scenario_classifier.py`:
+
+- `not_relevant` — нерелевантный тендер;
+- `relevant_direct` — релевантен для прямой обработки;
+- `relevant_dealer` — релевантен для дилера / партнёра;
+- `need_human_review` — требуется ручная проверка.
+
+`run.py` записывает результат `classify_scenario()` в поле `scenario_result` внутри `tender_score.json`. `summary_writer.py` отображает `scenario_result` в разделе `## 2. Итоговый сценарий` файла `tender_summary.md`.
+
+## 6. Быстрый запуск pipeline
+
+Пример запуска:
+
+```bash
+python tender-assistant-skill/run.py --input "sources_info/Тендер 1" --out "outputs/debug/tender_1" --top-k 5 --min-score 0
+```
+
+Параметры `run.py`:
+
+- `--input` — обязательный путь к файлу или папке с документами тендера;
+- `--out` — обязательный путь к папке для выходных файлов;
+- `--criteria` — путь к YAML/JSON-файлу критериев, default: `tender-assistant-skill/config/criteria.yaml`;
+- `--top-k` — максимальное число найденных фрагментов на критерий, default: `5`;
+- `--min-score` — минимальный score для найденного фрагмента, default: `0.0`.
+
+## 7. Regression check
+
+Команда запуска:
+
+```bash
+python tender-assistant-skill/scripts/regression_check.py
+```
+
+`regression_check.py` по фактическому коду проверяет:
+
+- окружение, текущую ветку, начальный `git status --short` и правила `.gitignore` для `outputs`, `outputs/debug`, `__pycache__`, `.pyc`;
+- `py_compile` для `tender-assistant-skill/run.py`, `tender-assistant-skill/src/output/summary_writer.py`, `tender-assistant-skill/src/scoring/scenario_classifier.py`;
+- runtime imports для `classify_scenario` и `render_summary`;
+- запуск `run.py --help`;
+- `summary_writer.py` на artificial JSON с полным `scenario_result`, без `scenario_result` и с partial `scenario_result`;
+- реальные тендеры из `sources_info/Тендер 1`, `sources_info/Тендер 2`, `sources_info/Тендер 3`, если эти папки доступны;
+- создание `tender_score.json`, `tender_summary.md`, `questions_for_customer.md` для реальных тендеров;
+- наличие валидного `scenario_result` в `tender_score.json`;
+- наличие разделов итогового сценария и краткой статистики в `tender_summary.md`;
+- соответствие snapshot-сценариям для тестовых тендеров;
+- очистку временных файлов и результатов проверки;
+- отсутствие `outputs/debug`, `__pycache__` и `.pyc` в `git status --short`;
+- отсутствие diff в production-файлах, которые перечислены внутри `regression_check.py`.
+
+`regression_check.py` нужно запускать перед изменениями pipeline и после них.
+
+- exit code `0` означает успешную проверку;
+- exit code `1` означает ошибку.
+
+## 8. Snapshot-сценарии для тестовых тендеров
+
+Фактические expected scenarios из `regression_check.py`:
+
+- `Тендер 1` -> `relevant_dealer`;
+- `Тендер 2` -> `relevant_dealer`;
+- `Тендер 3` -> `need_human_review`.
+
+Эти значения являются regression snapshots для текущих тестовых данных. Если бизнес-логика scoring меняется намеренно, expected-сценарии в `regression_check.py` нужно обновлять осознанно.
+
+## 9. Ограничения текущего MVP
+
+- Pipeline работает как deterministic-only MVP.
+- LLM-слой в текущий pipeline не добавлен.
+- Выводы зависят от `criteria.yaml` и найденных `evidence`.
+- Спорные, противоречивые или неполные случаи должны уходить в `need_human_review` или в вопросы человеку.
+- Результат не является финальным решением без проверки человеком.
+
+## 10. Рекомендуемый порядок работы разработчика
+
+1. Перед изменениями:
+
+```bash
+python tender-assistant-skill/scripts/regression_check.py
+```
+
+2. Внести изменения.
+
+3. После изменений:
+
+```bash
+python tender-assistant-skill/scripts/regression_check.py
+```
+
+4. Проверить diff и status:
+
+```bash
+git diff
+git status --short
+```
+
+## 11. Следующие планируемые шаги
+
+- DOCX-выгрузка сводки по шаблону.
+- Улучшение качества `evidence`.
+- Расширение критериев.
+- Улучшение вопросов для заказчика.
