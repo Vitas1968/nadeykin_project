@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from scoring.rule_engine import evaluate_tender_path
+from output.questions_writer import write_questions
 
 
 def main() -> int:
@@ -42,6 +43,8 @@ def main() -> int:
         json.dump(result, file, ensure_ascii=False, indent=2)
 
     print(f"Wrote: {out_path}")
+    questions_path = write_questions(result, out_dir / "questions_for_customer.md")
+    print(f"Wrote: {questions_path}")
     return 0
 
 
