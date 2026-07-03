@@ -3,24 +3,14 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
 try:
     from pypdf import PasswordType, PdfReader
 except ModuleNotFoundError:  # pragma: no cover - fallback for environments without pypdf
-    class PasswordType(Enum):
-        NOT_DECRYPTED = 0
-
-    class PdfReader:  # type: ignore[too-many-ancestors]
-        def __init__(self, path: str | Path):
-            self.path = Path(path)
-            self.is_encrypted = False
-            self.pages: list[Any] = []
-
-        def decrypt(self, password: str) -> PasswordType:
-            return PasswordType.NOT_DECRYPTED
+    PasswordType = None
+    PdfReader = None
 
 _SUPPORTED_EXTENSIONS = {".pdf"}
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -109,6 +99,9 @@ def _build_paragraph_block(
 
 
 def _open_pdf_reader(path: Path) -> PdfReader:
+    if PdfReader is None or PasswordType is None:
+        raise RuntimeError("pypdf is required to read PDF files")
+
     try:
         reader = PdfReader(path)
     except Exception as exc:  # pragma: no cover - defensive wrapper around pypdf
