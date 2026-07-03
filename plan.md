@@ -220,3 +220,25 @@ output/tender_2/
 Упаковать как skill.
 
 Ключевое: сначала скоринг, потом заполнение документов. Заполнение анкет и коммерческих форм — это второй этап, его лучше не смешивать с MVP.
+
+
+Рекомендуемый порядок дальше на 11:00 03.07.2026
+Сделать run.py как тонкий CLI-оркестратор.
+Он должен вызывать уже готовый evaluate_tender_path() и сохранять минимум tender_score.json.
+Сделать questions_writer.py.
+На первом этапе deterministic: брать unknown, conflict, fail, human_review_required=true и формировать вопросы человеку.
+Сделать summary_writer.py.
+На первом этапе deterministic Markdown: статистика, риски, top evidence, вопросы, предварительная рекомендация.
+Потом делать scenario_classifier.py.
+Он должен превращать набор rule-объектов в один сценарий: not_relevant, relevant_llk, relevant_dealer, need_human_review. Сценарии прямо зафиксированы в плане.
+Только после этого возвращаться к LLM-слою.
+В плане LLM должен работать с короткими фрагментами и узкими задачами, а не анализировать весь тендер целиком.
+Ближайшая задача
+
+Следующий prompt лучше дать на реализацию run.py, но в минимальном варианте:
+
+input folder
+→ evaluate_tender_path()
+→ output/tender_score.json
+
+Без summary, questions и scenario. Сначала нужно получить стабильный машинный JSON на реальном тендере. Потом уже на него навешивать questions_writer, summary_writer и scenario_classifier.
