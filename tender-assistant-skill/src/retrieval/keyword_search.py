@@ -5,7 +5,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     import yaml
@@ -174,31 +174,32 @@ def _find_phrase_position(text: str, phrase: str) -> int:
     return match.start() if match else -1
 
 
-def _find_token_position(text: str, token: str) -> int:
-    match = re.search(rf"(?<![a-zа-я0-9]){re.escape(token)}(?![a-zа-я0-9])", text)
-    return match.start() if match else -1
-
-
 def _find_substring_position(text: str, term: str) -> int:
     return text.find(term)
+
+
+def _truncate_snippet(snippet: str, max_chars: int) -> str:
+    if len(snippet) <= max_chars:
+        return snippet
+    if max_chars < 4:
+        return snippet[:max_chars]
+    return f"{snippet[: max_chars - 3].rstrip()}..."
 
 
 def _build_snippet(text: str, position: int, needle_length: int, max_chars: int = 240) -> str:
     if not text:
         return ""
+    if max_chars < 1:
+        return ""
     if position < 0:
         snippet = _normalize_whitespace(text)
-        return snippet if len(snippet) <= max_chars else f"{snippet[: max_chars - 3].rstrip()}..."
+        return _truncate_snippet(snippet, max_chars)
 
     half_window = max(40, max_chars // 2)
     start = max(0, position - half_window)
     end = min(len(text), position + needle_length + half_window)
     snippet = _normalize_whitespace(text[start:end])
-    if len(snippet) <= max_chars:
-        return snippet
-    if len(snippet) <= 3:
-        return snippet
-    return f"{snippet[: max_chars - 3].rstrip()}..."
+    return _truncate_snippet(snippet, max_chars)
 
 
 def make_snippet(text: str, terms: list[dict], max_chars: int = 320) -> str:
@@ -234,16 +235,14 @@ def make_snippet(text: str, terms: list[dict], max_chars: int = 320) -> str:
             return _build_snippet(normalized_text, position, len(normalized_term), max_chars=max_chars)
 
     for normalized_term in token_terms:
-        position = _find_token_position(normalized_text, normalized_term)
+        position = _find_phrase_position(normalized_text, normalized_term)
         if position < 0:
             position = _find_substring_position(normalized_text, normalized_term)
         if position >= 0:
             return _build_snippet(normalized_text, position, len(normalized_term), max_chars=max_chars)
 
     fallback_text = _normalize_whitespace(original_text.replace("\r\n", " ").replace("\r", " ").replace("\t", " "))
-    if len(fallback_text) <= max_chars:
-        return fallback_text
-    return f"{fallback_text[: max_chars - 3].rstrip()}..."
+    return _truncate_snippet(fallback_text, max_chars)
 
 
 def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str, Any] | None:
@@ -287,16 +286,15 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
                 continue
             text_score += 5.0
             remember_match(raw_term, "phrase:text")
-            if section_text and normalized_term in section_text:
+            if section_text and _find_phrase_position(section_text, normalized_term) >= 0:
                 bonus_score += 1.0
                 match_reasons.append("phrase:section")
-            if file_name_text and normalized_term in file_name_text:
+            if file_name_text and _find_phrase_position(file_name_text, normalized_term) >= 0:
                 bonus_score += 0.5
                 match_reasons.append("phrase:file_name")
             continue
 
         if normalized_term in text_token_set:
-            position = _find_token_position(normalized_text, normalized_term)
             text_score += 2.0
             remember_match(raw_term, "token:text")
             if normalized_term in section_tokens:
@@ -484,18 +482,18 @@ def _normalize_keywords_value(value: Any) -> list[str]:
     if isinstance(value, str):
         result: list[str] = []
         for part in value.split(","):
-            normalized_part = normalize_for_search(part)
-            if normalized_part:
-                result.append(normalized_part)
+            text = str(part).strip()
+            if text:
+                result.append(text)
         return result
     if isinstance(value, list):
         result = []
         for item in value:
             if isinstance(item, (dict, list)):
                 raise ValueError("keywords entries must be primitive values")
-            normalized_item = normalize_for_search(str(item))
-            if normalized_item:
-                result.append(normalized_item)
+            text = str(item).strip()
+            if text:
+                result.append(text)
         return result
     raise ValueError("keywords must be a list, string, or null")
 
