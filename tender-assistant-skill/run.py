@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from scoring.rule_engine import evaluate_tender_path
 from output.questions_writer import write_questions
+from output.summary_writer import write_summary
 
 
 def main() -> int:
@@ -45,6 +46,8 @@ def main() -> int:
     print(f"Wrote: {out_path}")
     questions_path = write_questions(result, out_dir / "questions_for_customer.md")
     print(f"Wrote: {questions_path}")
+    summary_path = write_summary(result, out_dir / "tender_summary.md")
+    print(f"Wrote: {summary_path}")
     return 0
 
 
