@@ -45,7 +45,7 @@ Quality labels:
 - `missing`: evidence отсутствует, и вывод основан на отсутствии подтверждающих фрагментов.
 - `conflict`: найденные фрагменты дают разные признаки или противоречат выводу `rule_engine`.
 
-Audit основан на текущих `criteria.yaml`, `keyword_search.py` и `rule_engine.py`. Важное наблюдение по коду: `rule_engine` считает подтверждающим любое evidence со `score > 0`, а текущий `criteria.yaml` не задает явных `negative_keywords` / `negative_terms`. Поэтому часть `pass` фактически означает "найдено keyword evidence", а не "критерий надежно подтвержден".
+Первичный audit был основан на тогдашних `criteria.yaml`, `keyword_search.py` и `rule_engine.py`. Важное наблюдение по коду: `rule_engine` считает подтверждающим любое evidence со `score > 0`. До refinement в `criteria.yaml` не было явных `negative_keywords` / `negative_terms`, поэтому часть `pass` фактически означала "найдено keyword evidence", а не "критерий надежно подтвержден".
 
 Checkpoint после `Тендер 1`: labels применяются согласованно. `missing` использован только при отсутствии evidence, `conflict` только при противоречивых признаках, `good` не ставился для косвенных procedural snippets. Audit продолжен по `Тендер 2` и `Тендер 3`.
 
@@ -65,13 +65,28 @@ Checkpoint после `Тендер 1`: labels применяются согла
 
 Старые observations в разделах rule-level audit сохранены как причина фикса и как regression context. Актуальные scenario summaries ниже указывают post-fix поведение pipeline.
 
+## 2.2 Актуализация после criteria.yaml refinement
+
+После production-fix был выполнен config-only refinement `criteria.yaml`. Код pipeline, `regression_check.py` и regression snapshots при этом не менялись.
+
+В `criteria.yaml` актуально отражены следующие изменения:
+
+- `security_requirement` получил explicit `negative_terms` для фраз вида "обеспечение ... не требуется", "не установлено", "не предусмотрено";
+- `msp_restriction` сужен до explicit МСП/СМП terms;
+- `procurement_method` стал строже вокруг электронного аукциона;
+- `quantity_measure` уточнен в сторону количества закупки, а не упаковочного объема;
+- `oil_classification` расширен на промышленные масла и марки: `ТП-22С`, `ТП-22`, `ХФ 12-16`, `VDL`, "турбинное масло", "компрессорное масло", "гидравлическое масло";
+- standalone `ГОСТ` / `ТУ` / `ISO` / `DIN` не добавлены как keywords, чтобы не увеличивать шум.
+
+Свежая проверка после refinement запускалась с теми же audit-параметрами `--top-k 5 --min-score 0`, что и исторический audit. Поэтому comparison ниже считается сопоставимым по параметрам запуска; изменения в counts и rule behavior относятся к текущему `criteria.yaml` и уже существующей post-fix логике.
+
 ## 3. Общая сводка
 
-| Tender | Pre-fix scenario | Post-fix scenario | Post-fix confidence | Rules total | Good | Weak | Noisy | Missing | Conflict | Main issue |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---|
-| Тендер 1 | `relevant_dealer` | `need_human_review` | `medium` | 18 | 14 | 2 | 2 | 0 | 0 | Production-fix больше не считает `security_requirement` clean pass при evidence "не требуется"; критерий уходит в вопрос человеку. |
-| Тендер 2 | `relevant_dealer` | `relevant_direct` | `medium` | 18 | 9 | 5 | 4 | 0 | 0 | Noisy `msp_restriction` больше не является основанием для dealer routing; МСП-ограничение не подтверждено текущим evidence. |
-| Тендер 3 | `need_human_review` | `need_human_review` | `medium` | 18 | 12 | 1 | 2 | 2 | 1 | Сценарий остается ручной проверкой из-за missing `oil_classification`; post-fix также задает вопрос по negative security evidence. |
+| Tender | Pre-fix scenario | Post-fix scenario | Post-criteria scenario | Post-criteria confidence | Rules total | Good | Weak | Noisy | Missing | Conflict | Main issue |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| Тендер 1 | `relevant_dealer` | `need_human_review` | `need_human_review` | `medium` | 18 | 14 | 2 | 2 | 0 | 0 | `security_requirement` остается `pass` с `security_requirement_negative_evidence`, `risk=medium`, `human_review_required=true`; criteria refinement не меняет scenario. |
+| Тендер 2 | `relevant_dealer` | `relevant_direct` | `relevant_direct` | `medium` | 18 | 9 | 5 | 4 | 0 | 0 | `msp_restriction` still pass with concern and question, но без explicit МСП/СМП/dealer/partner evidence не ведет к `relevant_dealer`. |
+| Тендер 3 | `need_human_review` | `need_human_review` | `need_human_review` | `medium` | 18 | 13 | 2 | 1 | 1 | 1 | `oil_classification` улучшился с `unknown` до `pass` за счет industrial oil terms; scenario все равно `need_human_review` из-за negative `security_requirement`. |
 
 ## 4. Cross-tender findings
 
@@ -79,7 +94,7 @@ Checkpoint после `Тендер 1`: labels применяются согла
 - Лучший evidence обычно дают технические задания, спецификации и project contract sections, где есть таблицы с предметом, сроками, местом поставки, упаковкой, качеством и ценой.
 - Хуже всего работают общие procedural documents: они дают много совпадений по словам "закупка", "договор", "обеспечение", "поставщик", но не всегда подтверждают конкретный критерий.
 - `keyword_search.py` ранжирует совпадения по сумме term matches без proximity к смысловому объекту. Поэтому фразы "обеспечение не требуется", "только зарегистрированный участник", "приложение 2" могут попадать в evidence surface.
-- `criteria.yaml` смешивает must-have признаки и broad query terms. Например, `procurement_method` ищет "способ закупки электронный аукцион url адрес процедуры", но находит generic "закупочная процедура".
+- Исторически `criteria.yaml` смешивал must-have признаки и broad query terms. После refinement часть критериев стала строже, но `procurement_method` все еще может получать snippets про generic electronic document / electronic form вместо прямого "электронный аукцион".
 - Pre-fix `rule_engine.py` не различал подтверждающее, отрицательное и нейтральное evidence для целевых high-priority pass. Это было особенно заметно по `security_requirement`.
 - Pre-fix `questions_writer.py` формировал вопросы только по `human_review_required` / `unknown` / `fail` / `conflict`. Production-fix добавил вопросы для high-priority `pass` с `evidence_concerns`.
 
@@ -94,8 +109,14 @@ Checkpoint после `Тендер 1`: labels применяются согла
 - post-fix human_review_required: `true`
 - post-fix blocking_criteria: `security_requirement`
 - post-fix reasons: `security_requirement` требует ручной проверки из-за evidence с отрицанием требования обеспечения.
+- post-criteria scenario: `need_human_review`
+- post-criteria recommendation: передать на ручную проверку.
+- post-criteria confidence: `medium`
+- post-criteria human_review_required: `true`
+- post-criteria blocking_criteria: `security_requirement`
+- post-criteria reasons: `security_requirement` остается high-priority `pass` с `security_requirement_negative_evidence`, `risk=medium` и вопросом человеку.
 
-Post-fix pipeline stats:
+Post-criteria pipeline stats:
 
 - documents: 7
 - rules: 18
@@ -103,7 +124,7 @@ Post-fix pipeline stats:
 - unknown/fail/conflict: 0
 - human_review_required: 1
 
-Pre-fix finding retained for context: audit выявил, что `security_requirement` ошибочно выглядел clean `pass` на snippets "обеспечение ... не требуется". Production-fix изменил это поведение: rule остается `pass` по keyword evidence, но получает concern, `risk=medium`, `human_review_required=true` и вопрос человеку.
+Pre-fix finding retained for context: audit выявил, что `security_requirement` ошибочно выглядел clean `pass` на snippets "обеспечение ... не требуется". Production-fix изменил это поведение: rule остается `pass` по keyword evidence, но получает concern, `risk=medium`, `human_review_required=true` и вопрос человеку. Criteria refinement добавил explicit `negative_terms`; в свежем запуске это подтверждает уже существующее post-fix поведение, а не меняет scenario.
 
 ### 5.2 Rule-level evidence quality
 
@@ -168,14 +189,15 @@ Pre-fix finding retained for context: audit выявил, что `security_requi
 #### rule_id: `security_requirement`
 
 - criterion: Обязательство по обеспечению участия в тендере или обеспечения по договору.
-- status/risk: `pass` / `low`
-- pipeline comment: Критерий подтвержден найденными фрагментами: 5.
+- status/risk: `pass` / `medium`
+- pipeline comment: Найдено evidence с отрицанием требования обеспечения; требуется ручная проверка.
 - quality: `noisy`
 - evidence snippets:
   - `Документация.docx`: "обеспечение заявки на участие в закупке | не требуется"
   - `Документация.docx`: "обеспечение исполнения договора | не требуется."
-- audit note: evidence прямо указывает отсутствие требования, но rule получает `pass`.
-- recommendation: добавить negative patterns для "не требуется", "не установлено", "не предусмотрено" рядом с обеспечением.
+- historical pre-fix issue: evidence прямо указывал отсутствие требования, но rule выглядел clean `pass`.
+- post-fix behavior: rule получает `evidence_concerns`, `risk=medium`, `human_review_required=true` и вопрос человеку.
+- post-criteria behavior: explicit `negative_terms` в `criteria.yaml` сохраняют тот же актуальный outcome: `security_requirement_negative_evidence` найден, scenario остается `need_human_review`.
 
 ## 6. Tender 2 audit
 
@@ -188,8 +210,14 @@ Pre-fix finding retained for context: audit выявил, что `security_requi
 - post-fix human_review_required: `false`
 - blocking_criteria: нет
 - post-fix reasons: `msp_restriction` имеет status `pass`, но явный МСП/СМП/dealer/partner признак в evidence не найден; core subject criteria подтверждены.
+- post-criteria scenario: `relevant_direct`
+- post-criteria recommendation: передать тендер в прямую обработку профильному подразделению.
+- post-criteria confidence: `medium`
+- post-criteria human_review_required: `false`
+- post-criteria blocking_criteria: нет
+- post-criteria reasons: `msp_restriction` остается `pass` с `msp_indicator_not_explicit`, но этот concern не блокирует direct scenario; core subject criteria подтверждены.
 
-Post-fix pipeline stats:
+Post-criteria pipeline stats:
 
 - documents: 8
 - rules: 18
@@ -214,8 +242,8 @@ Pre-fix finding retained for context: audit выявил, что noisy `msp_rest
 | `packaging_format` | pass | low | false | 5 | noisy | Top snippets generic: обязательства, документы, обеспечение; формат упаковки не подтвержден. |
 | `quality_freshness` | pass | low | false | 4 | good | Есть "товар должен быть изготовлен не ранее 2025 года". |
 | `quality_documents` | pass | low | false | 5 | good | Есть паспорта качества, сертификаты и декларации. |
-| `msp_restriction` | pass | medium | true | 5 | noisy | Post-fix: evidence про личный кабинет/ЕИС/аккредитацию не подтверждает МСП; rule получает concern и вопрос человеку, но не ведет к `relevant_dealer`. |
-| `procurement_method` | pass | low | false | 5 | noisy | Snippets про электронный документооборот и обеспечение, не про электронный аукцион. |
+| `msp_restriction` | pass | medium | true | 5 | noisy | Post-criteria: evidence все еще не содержит explicit МСП/СМП/dealer/partner признака; rule получает concern и вопрос человеку, но не ведет к `relevant_dealer`. |
+| `procurement_method` | pass | low | false | 5 | noisy | Несмотря на stricter criteria, top snippets остаются про электронный документооборот, а не про электронный аукцион. |
 | `price_nmc` | pass | low | false | 5 | weak | Evidence показывает price table fields и "итого не указано"; НМЦ подтверждена неполно. |
 | `security_requirement` | pass | low | false | 5 | good | Есть "обеспечение исполнения контракта" и независимая гарантия. |
 | `national_regime` | pass | low | false | 5 | weak | Evidence в основном шаблонное: "если ... установлены запрет/ограничение/преимущество". |
@@ -227,15 +255,16 @@ Pre-fix finding retained for context: audit выявил, что noisy `msp_rest
 #### rule_id: `msp_restriction`
 
 - criterion: Закупка только для субъектов МСП.
-- status/risk: `pass` / `low`
-- pipeline comment: Критерий подтвержден найденными фрагментами: 5.
+- status/risk: `pass` / `medium`
+- pipeline comment: Найденные фрагменты не содержат явного признака МСП/СМП, дилера или партнера; требуется проверка.
 - quality: `noisy`
 - evidence snippets:
   - `Приложение ПИК...docx`: "личный кабинет ... доступная только зарегистрированным ... пользователям"
   - `Требование к содержанию...docx`: "участник закупки вправе подать только одну заявку..."
   - `Требование к содержанию...docx`: "подать заявку ... вправе только зарегистрированный ... участник закупки..."
-- audit note: snippets не подтверждают ограничение МСП. Pre-fix `scenario_classifier` использовал `msp_restriction pass` как основание для `relevant_dealer`; production-fix больше не допускает dealer routing без explicit МСП/СМП/dealer/partner evidence.
-- recommendation: усилить критерий МСП: требовать фразу "субъекты МСП/СМП/малого и среднего предпринимательства" в одном snippet.
+- historical pre-fix issue: noisy `msp_restriction pass` был достаточен для `relevant_dealer`.
+- post-fix behavior: `scenario_classifier` больше не допускает dealer routing без explicit МСП/СМП/dealer/partner evidence.
+- post-criteria behavior: критерий сужен до explicit terms, но top evidence в fresh run все еще содержит procedural snippets; outcome остается `pass` with concern, `risk=medium`, question generated.
 
 #### rule_id: `packaging_format`
 
@@ -258,8 +287,9 @@ Pre-fix finding retained for context: audit выявил, что noisy `msp_rest
 - evidence snippets:
   - `Приложение ПИК...docx`: "способ обеспечения исполнения контракта..."
   - `Приложение ПИК...docx`: "электронный документ..."
-- audit note: keyword matching по "способ" и "электронный" не подтверждает "электронный аукцион".
-- recommendation: искать точную phrase "электронный аукцион" или конкретное поле "способ закупки".
+- historical issue: keyword matching по "способ" и "электронный" не подтверждало "электронный аукцион".
+- post-criteria behavior: stricter criteria не устранил шум в этом тендере; top snippets все еще про `электронный документ` / ЭДО, а не про способ закупки.
+- recommendation: сохраняется backlog для proximity/phrase matching и source priority; не считать generic electronic document evidence подтверждением электронного аукциона.
 
 #### rule_id: `national_regime`
 
@@ -283,15 +313,21 @@ Pre-fix finding retained for context: audit выявил, что noisy `msp_rest
 - post-fix human_review_required: `true`
 - post-fix blocking_criteria: `oil_classification`
 - post-fix reasons: high-priority criterion `oil_classification` не подтвержден; `security_requirement` также формирует вопрос человеку из-за evidence "не требуется".
+- post-criteria scenario: `need_human_review`
+- post-criteria recommendation: передать на ручную проверку из-за negative `security_requirement` evidence.
+- post-criteria confidence: `medium`
+- post-criteria human_review_required: `true`
+- post-criteria blocking_criteria: `security_requirement`
+- post-criteria reasons: `oil_classification` теперь подтвержден industrial oil evidence, но `security_requirement` получает `security_requirement_negative_evidence`, `risk=medium`, `human_review_required=true`.
 
-Pipeline stats:
+Post-criteria pipeline stats:
 
 - documents: 11
 - rules: 18
-- pass: 16
-- unknown: 2
+- pass: 17
+- unknown: 1
 - fail/conflict: 0
-- human_review_required: 2
+- human_review_required: 1
 
 ### 7.2 Rule-level evidence quality
 
@@ -301,8 +337,8 @@ Pipeline stats:
 | `subject_title_oil` | pass | low | false | 5 | good | Есть "турбинное масло", "масло ХФ 12-16", compressor oil. |
 | `purchase_type_goods` | pass | low | false | 5 | good | Есть договорные положения о товаре, поставке, приемке и разгрузке. |
 | `oil_purpose` | unknown | low | false | 0 | missing | Evidence отсутствует. |
-| `oil_classification` | unknown | medium | true | 0 | missing | Evidence отсутствует; это корректно ведет к `need_human_review`. |
-| `quantity_measure` | pass | low | false | 5 | noisy | Top evidence про тару/упаковку и объемы упаковки, а не измеримую потребность по товару. |
+| `oil_classification` | pass | low | false | 5 | good | Post-criteria evidence прямо содержит `ТП-22С`, "турбинное масло", вязкость и другие признаки industrial oil classification. |
+| `quantity_measure` | pass | low | false | 5 | weak | Evidence теперь ближе к строкам номенклатуры с `ед. изм.` / `кол-во`, но конкретные значения потребности видны неполно. |
 | `delivery_period` | pass | low | false | 5 | good | Есть "август 2026 г." и срок поставки товара. |
 | `delivery_location` | pass | low | false | 5 | good | Есть склад заказчика: г. Советск, ул. Энергетиков, д. 1г. |
 | `packaging_format` | pass | low | false | 5 | good | Есть металлические бочки 200-250 л и полимерные канистры/бутыли 1/3/5/10 л. |
@@ -311,7 +347,7 @@ Pipeline stats:
 | `msp_restriction` | pass | low | false | 5 | good | Evidence прямо говорит, что участниками могут быть только субъекты МСП. |
 | `procurement_method` | pass | low | false | 5 | noisy | Evidence говорит о закупочной процедуре, но не подтверждает "электронный аукцион"; manual source check показывает "запрос предложений". |
 | `price_nmc` | pass | low | false | 5 | good | Есть НМЦ `12 417 117.71 руб.` с НДС и `10 177 965.33 руб.`. |
-| `security_requirement` | pass | medium | true | 5 | conflict | Post-fix: условные snippets и прямые "не требуется" формируют concern и вопрос человеку. |
+| `security_requirement` | pass | medium | true | 5 | conflict | Post-criteria: условные snippets и прямые "не требуется" формируют `security_requirement_negative_evidence`, concern и вопрос человеку. |
 | `national_regime` | pass | low | false | 5 | good | Есть national regime section и форма страны происхождения товара. |
 | `contract_terms` | pass | low | false | 5 | good | Есть проект договора и протокол разногласий. |
 | `after_sales_service` | pass | low | false | 5 | good | Есть обязанности по замене некачественного товара, уведомлению об отгрузке, документам и вывозу непринятого товара. |
@@ -344,24 +380,28 @@ Pipeline stats:
 #### rule_id: `oil_classification`
 
 - criterion: Указан тип масла и стандарт применимости.
-- status/risk: `unknown` / `medium`
-- pipeline comment: Подтверждающие фрагменты не найдены.
-- quality: `missing`
+- status/risk: `pass` / `low`
+- pipeline comment: Критерий подтвержден найденными фрагментами: 5.
+- quality: `good`
 - evidence snippets:
-  - Evidence отсутствует.
-- audit note: это корректный high-priority blocker для `need_human_review`.
-- recommendation: расширить критерий за пределы моторных масел: ГОСТ/ТУ, DIN, ISO, марка ТП-22С, ХФ 12-16, compressor oil standards.
+  - `Приложение №1 к ДоЗ - Техническое задание.xlsx`: "турбинное масло | марка - тп-22с..."
+  - `Приложение №1 к ДоЗ - Техническое задание.xlsx`: "вязкость кинематическая ... индекс вязкости..."
+- historical post-fix behavior: до criteria refinement evidence отсутствовал, и `oil_classification` был high-priority blocker для `need_human_review`.
+- post-criteria behavior: критерий расширен на industrial oils; `ТП-22С` / "турбинное масло" дают `pass`, `risk=low`, `human_review_required=false`.
+- current scenario note: scenario все равно остается `need_human_review`, но уже не из-за `oil_classification`, а из-за `security_requirement`.
 
 #### rule_id: `quantity_measure`
 
 - criterion: Есть измеримая потребность.
 - status/risk: `pass` / `low`
 - pipeline comment: Критерий подтвержден найденными фрагментами: 5.
-- quality: `noisy`
+- quality: `weak`
 - evidence snippets:
-  - `Приложение №1 к ДоЗ - Техническое задание.xlsx`: "требования к таре упаковке маркировке товара | ... бочки ... 200 до 250 литров..."
-- audit note: snippet подтверждает формат упаковки, но не количество закупаемой потребности.
-- recommendation: искать значения в строках номенклатуры: товар + единица измерения + количество.
+  - `Приложение №1 к ДоЗ - Техническое задание.xlsx`: "наименование товара | ... | ед. изм. | кол-во"
+  - `Приложение №1 к ДоЗ - Техническое задание.xlsx`: "нормативный документ ... | ед. изм. | кол-во"
+- historical issue: top evidence раньше уходил в тару/упаковочные объемы.
+- post-criteria behavior: evidence стал ближе к purchase quantity columns, но top snippets все еще не показывают полную строку товара с конкретным количеством.
+- recommendation: backlog остается прежним: table evidence grouping для строки `товар + единица измерения + количество`.
 
 #### rule_id: `procurement_method`
 
@@ -373,25 +413,38 @@ Pipeline stats:
   - `Документация о закупке.docx`: "закупочная комиссия ... по результатам проведенной закупочной процедуры..."
   - `Документация о закупке.docx`: "изменить способ проведения закупки"
 - manual source check: в related evidence по `msp_restriction` указано "запрос предложений в электронной форме", а не "электронный аукцион".
-- audit note: current evidence не подтверждает критерий; status `pass` слишком уверенный.
-- recommendation: разделить способы закупки и не считать generic "закупочная процедура" подтверждением аукциона.
+- historical issue: generic "закупочная процедура" не подтверждала электронный аукцион.
+- post-criteria behavior: stricter criteria не устранил шум полностью; fresh top snippets содержат "не в электронной форме", договорные сроки и "на право заключения договора", но не прямой "электронный аукцион".
+- recommendation: разделить способы закупки и не считать generic "электронная форма" / "закупочная процедура" подтверждением аукциона.
 
 #### rule_id: `security_requirement`
 
 - criterion: Обязательство по обеспечению участия в тендере или обеспечения по договору.
-- status/risk: `pass` / `low`
-- pipeline comment: Критерий подтвержден найденными фрагментами: 5.
+- status/risk: `pass` / `medium`
+- pipeline comment: Найдено evidence с отрицанием требования обеспечения; требуется ручная проверка.
 - quality: `conflict`
 - evidence snippets:
   - `Документация о закупке.docx`: "если требование о предоставлении такого обеспечения было предусмотрено..."
   - `Извещение о закупке.docx`: "обеспечение заявки на участие ... не требуется"
   - `Извещение о закупке.docx`: "обеспечение исполнения обязательств по договору | не требуется"
-- audit note: rule получает `pass`, но evidence содержит как условные mentions, так и явные отрицательные признаки.
-- recommendation: обрабатывать "не требуется" как negative evidence; при смеси conditional и direct-negative ставить `human_review_required`.
+- historical issue: rule получал `pass`, хотя evidence содержал как условные mentions, так и явные отрицательные признаки.
+- post-fix behavior: negative security evidence уже ведет к concern, `risk=medium`, `human_review_required=true`.
+- post-criteria behavior: explicit `negative_terms` подтверждают этот outcome; именно `security_requirement`, а не `oil_classification`, теперь является актуальной причиной `need_human_review`.
 
 ## 8. Recommendations
 
-Часть рекомендаций из первичного audit уже закрыта production-fix: high-priority `pass` с `evidence_concerns` попадает в вопросы, `security_requirement` с отрицательным evidence не остается clean pass, а `relevant_dealer` требует explicit МСП/СМП/dealer/partner evidence. Остальные пункты ниже остаются backlog-направлениями улучшения evidence quality.
+Часть рекомендаций из первичного audit уже закрыта production-fix и criteria refinement. Уже сделано:
+
+- high-priority `pass` с `evidence_concerns` попадает в вопросы;
+- `security_requirement` с отрицательным evidence не остается clean pass;
+- `relevant_dealer` требует explicit МСП/СМП/dealer/partner evidence;
+- `security_requirement` получил explicit `negative_terms` в `criteria.yaml`;
+- `msp_restriction` сужен до explicit МСП/СМП terms;
+- `procurement_method` стал строже вокруг электронного аукциона;
+- `quantity_measure` уточнен в сторону количества закупки;
+- `oil_classification` расширен на industrial oil terms.
+
+Остальные пункты ниже остаются backlog-направлениями улучшения evidence quality.
 
 ### 8.1 `keyword_search.py`
 
@@ -403,11 +456,10 @@ Pipeline stats:
 
 ### 8.2 `criteria.yaml`
 
-- Уточнить `procurement_method`: искать точные phrase values (`электронный аукцион`, `запрос предложений`, `конкурс`) вместо broad "способ закупки".
-- Для `msp_restriction` требовать explicit terms: `субъекты МСП`, `субъекты малого и среднего предпринимательства`, `СМП`.
-- Для `security_requirement` добавить negative patterns: `не требуется`, `не установлено`, `не предусмотрено`.
-- Для `oil_classification` расширить synonyms за пределы моторных масел: `ГОСТ`, `ТУ`, `DIN`, `ISO`, `ТП-22С`, `ХФ 12-16`, `VDL`.
-- Разделить критерий `quantity_measure` на "есть количество закупки" и "есть требования к упаковочным объемам".
+- Не добавлять standalone `ГОСТ` / `ТУ` / `ISO` / `DIN` как keywords без предметных соседей: это может усилить шум.
+- Если потребуется следующий config-only pass, уточнять его по fresh false positives, а не возвращать уже закрытые broad terms.
+- Для `procurement_method` может потребоваться еще более строгая phrase/proximity логика, потому что fresh run все еще ловит generic electronic document / electronic form snippets.
+- Для `quantity_measure` может потребоваться отдельный table-aware критерий или metadata hint, потому что даже уточненные terms не вытаскивают полную строку с конкретным количеством.
 
 ### 8.3 `rule_engine.py`
 
@@ -419,11 +471,10 @@ Pipeline stats:
 
 ### 8.4 `questions_writer.py`
 
-- Расширить текущую post-fix механику вопросов по `evidence_concerns` на новые weak/noisy high-priority criteria.
+- Текущая post-fix механика уже выводит вопросы по high-priority `pass` с `evidence_concerns`, включая `security_requirement` и `msp_restriction`.
+- Backlog: расширить механику вопросов на будущий deterministic quality layer для weak/noisy high-priority criteria.
 - Добавлять human-readable reason: "найдено keyword evidence, но не подтверждено текущим evidence".
 - Группировать вопросы по блокам: предмет, поставка, качество, процедура, цена.
-- Сохранять вопросы по `msp_restriction`, если evidence не содержит explicit МСП/СМП/dealer/partner terms.
-- Для `security_requirement` задавать вопрос при наличии "не требуется" рядом с "обеспечение".
 
 ### 8.5 DOCX/summary output
 
@@ -436,8 +487,6 @@ Pipeline stats:
 ## 9. Suggested next implementation steps
 
 1. Small safe improvements:
-   - добавить negative patterns в `criteria.yaml` для `security_requirement`;
-   - уточнить keywords для `msp_restriction` и `procurement_method`;
    - добавить в summary/questions пометку для high-priority `pass` с низким evidence quality после отдельного quality layer.
 2. Medium improvements:
    - доработать ranking/snippet extraction для таблиц;
@@ -446,9 +495,9 @@ Pipeline stats:
 3. Risky / needs review improvements:
    - расширить `rule_engine` до evidence-quality-aware scoring;
    - добавить отдельный deterministic quality layer между retrieval и rule scoring;
-   - пересмотреть сценарную логику, чтобы `relevant_dealer` не зависел от шумного `msp_restriction pass`.
+   - расширять scenario logic только при появлении новых business cases, не закрытых текущим `relevant_dealer` explicit indicator gate.
 
-Большой rewrite не требуется. Основные проблемы можно закрывать точечно: criteria refinements, negative patterns, table grouping, proximity/source ranking.
+Большой rewrite не требуется. Уже выполненные criteria refinements не нужно повторять как backlog; оставшиеся проблемы лучше закрывать через table grouping, proximity/source ranking и отдельный evidence quality layer.
 
 ## 10. Appendix: commands and generated files
 
@@ -466,15 +515,46 @@ git check-ignore -q outputs/debug && echo "outputs/debug ignored" || echo "outpu
 - initial `git status --short`: empty
 - `outputs/debug`: ignored
 - `AGENTS.md`: найден и прочитан
-- `tender-assistant-skill/docs/evidence_quality_audit.md`: файла не было, создан новый
+- current update scope: изменялся только `tender-assistant-skill/docs/evidence_quality_audit.md`
+- regression snapshots: отдельные tracked snapshot-файлы не обнаружены; expected scenarios заданы в `tender-assistant-skill/scripts/regression_check.py` (`EXPECTED_TENDER_SCENARIOS`) и рабочие regression outputs пишутся в ignored `outputs/debug/regression_check`
 
-Pipeline commands:
+Historical pipeline commands:
 
 ```bash
 python tender-assistant-skill/run.py --input "sources_info/Тендер 1" --out "outputs/debug/evidence_quality_audit/tender_1" --top-k 5 --min-score 0
 python tender-assistant-skill/run.py --input "sources_info/Тендер 2" --out "outputs/debug/evidence_quality_audit/tender_2" --top-k 5 --min-score 0
 python tender-assistant-skill/run.py --input "sources_info/Тендер 3" --out "outputs/debug/evidence_quality_audit/tender_3" --top-k 5 --min-score 0
 ```
+
+Historical audit parameters:
+
+- `--top-k 5 --min-score 0`
+
+Criteria refinement verification:
+
+```bash
+python tender-assistant-skill/run.py --input "sources_info/Тендер 1" --out "outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_1" --top-k 5 --min-score 0
+python tender-assistant-skill/run.py --input "sources_info/Тендер 2" --out "outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_2" --top-k 5 --min-score 0
+python tender-assistant-skill/run.py --input "sources_info/Тендер 3" --out "outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_3" --top-k 5 --min-score 0
+```
+
+Criteria refinement pipeline results:
+
+- `Тендер 1`: exit code `0`, generated `tender_score.json`, `questions_for_customer.md`, `tender_summary.md`, `tender_summary.docx`.
+- `Тендер 2`: exit code `0`, generated `tender_score.json`, `questions_for_customer.md`, `tender_summary.md`, `tender_summary.docx`.
+- `Тендер 3`: exit code `0`, generated `tender_score.json`, `questions_for_customer.md`, `tender_summary.md`, `tender_summary.docx`.
+
+Criteria refinement analyzed output files:
+
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_1/tender_score.json`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_1/tender_summary.md`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_1/questions_for_customer.md`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_2/tender_score.json`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_2/tender_summary.md`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_2/questions_for_customer.md`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_3/tender_score.json`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_3/tender_summary.md`
+- `outputs/debug/evidence_quality_audit_after_criteria_refinement/tender_3/questions_for_customer.md`
 
 Pipeline results:
 
@@ -516,7 +596,7 @@ git diff -- tender-assistant-skill/docs/evidence_quality_audit.md
 git status --short
 ```
 
-Original audit verification results:
+Historical original audit verification results:
 
 - `test -f ...`: Git Bash command could not start in this environment (`Bash/Service/CreateInstance/E_ACCESSDENIED`); PowerShell fallback `Test-Path` returned `exists`.
 - `git diff --stat`: empty output because the audit file is new and still untracked.
@@ -528,3 +608,23 @@ Post-fix docs-only update:
 
 - This document was updated after production-fix to separate historical audit findings from current pipeline behavior.
 - No code, `regression_check.py`, or `README.md` changes are part of this docs-only update.
+
+Current criteria-refinement docs-only verification:
+
+- Fresh pipeline commands used `--top-k 5 --min-score 0`, matching historical audit parameters.
+- Fresh outputs are under `outputs/debug/evidence_quality_audit_after_criteria_refinement`.
+- Regression check command after this docs update: `python tender-assistant-skill/scripts/regression_check.py`.
+- Regression check result: exit code `0`, final result `ALL CHECKS PASSED`.
+- Regression expected scenarios remained:
+  - `Тендер 1` -> `need_human_review`
+  - `Тендер 2` -> `relevant_direct`
+  - `Тендер 3` -> `need_human_review`
+- Regression snapshots location: no separate tracked snapshot files were found; expected scenarios are stored in `tender-assistant-skill/scripts/regression_check.py`, while generated regression outputs are under ignored `outputs/debug/regression_check`.
+- Regression cleanup warning: Windows `PermissionError` warnings remained only for ignored `outputs/debug/regression_check` files; `git status --short` did not include `outputs/debug`.
+- Final git diff/status commands after this docs update:
+
+```bash
+git diff -- tender-assistant-skill/docs/evidence_quality_audit.md
+git diff --stat
+git status --short
+```
