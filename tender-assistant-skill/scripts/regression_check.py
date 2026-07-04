@@ -77,6 +77,10 @@ ARTIFICIAL_FILES = [
     "tmp_summary_partial_scenario.md",
 ]
 
+DOCX_OUTPUT_NAME = "tender_summary.docx"
+DOCX_EXPORT_MARKER = "DOCX summary written to:"
+DOCX_DISABLED_MARKER = "DOCX export disabled by --no-docx"
+
 
 def rel_path(path: Path) -> str:
     try:
@@ -562,20 +566,46 @@ def run_real_tender_checks(lines: list[str], failures: list[str]) -> None:
         score_path = out_dir / "tender_score.json"
         summary_path = out_dir / "tender_summary.md"
         questions_path = out_dir / "questions_for_customer.md"
+        docx_path = out_dir / DOCX_OUTPUT_NAME
         score_exists, score_exists_error = safe_exists(score_path)
         summary_exists, summary_exists_error = safe_exists(summary_path)
         questions_exists, questions_exists_error = safe_exists(questions_path)
+        docx_exists, docx_exists_error = safe_exists(docx_path)
+        docx_size: int | None = None
+        docx_size_error = ""
+        if docx_exists:
+            try:
+                docx_size = docx_path.stat().st_size
+            except OSError as exc:
+                docx_size_error = f"{type(exc).__name__}: {exc}"
+        docx_size_ok = docx_exists and docx_size is not None and docx_size > 0
+        docx_marker_found = DOCX_EXPORT_MARKER in result["stdout"]
 
-        files_ok = score_exists and summary_exists and questions_exists
+        files_ok = score_exists and summary_exists and questions_exists and docx_exists
         lines.append(
             "- files created: "
             f"tender_score.json={'yes' if score_exists else 'no'}, "
             f"tender_summary.md={'yes' if summary_exists else 'no'}, "
-            f"questions_for_customer.md={'yes' if questions_exists else 'no'}"
+            f"questions_for_customer.md={'yes' if questions_exists else 'no'}, "
+            f"{DOCX_OUTPUT_NAME}={'yes' if docx_exists else 'no'}"
         )
-        for path_error in [score_exists_error, summary_exists_error, questions_exists_error]:
+        for path_error in [score_exists_error, summary_exists_error, questions_exists_error, docx_exists_error]:
             if path_error:
                 lines.append(f"- file existence error: {path_error}")
+        if docx_size_error:
+            lines.append(f"- docx size error: {docx_size_error}")
+        size_text = str(docx_size) if docx_size is not None else "unknown"
+        lines.append(
+            f"- docx size > 0: {'yes' if docx_size_ok else 'no'} ({size_text} bytes)"
+        )
+        lines.append(f"- docx stdout marker: {'OK' if docx_marker_found else 'FAIL'}")
+        if not docx_size_ok:
+            lines.append(f"- expected {DOCX_OUTPUT_NAME}: {rel_path(docx_path)}")
+            lines.append(f"- docx exists: {'yes' if docx_exists else 'no'}")
+            lines.append(f"- docx size: {size_text}")
+        if not docx_marker_found:
+            lines.append(f"- expected docx stdout marker: {DOCX_EXPORT_MARKER}")
+            lines.append(f"- docx marker found: {'yes' if docx_marker_found else 'no'}")
 
         score_data, score_error = safe_read_json(score_path)
         scenario = None
@@ -617,6 +647,8 @@ def run_real_tender_checks(lines: list[str], failures: list[str]) -> None:
             and scenario_ok
             and summary_ok
             and expected_ok
+            and docx_size_ok
+            and docx_marker_found
         )
         lines.append(f"- {name}: {'OK' if ok else 'FAIL'}")
         if not ok:
@@ -624,12 +656,83 @@ def run_real_tender_checks(lines: list[str], failures: list[str]) -> None:
         lines.append("")
 
 
+def run_no_docx_check(lines: list[str], failures: list[str]) -> None:
+    lines.extend(["### --no-docx check", ""])
+    name = next(iter(EXPECTED_TENDER_SCENARIOS))
+    source_path = REPO_ROOT / "sources_info" / name
+    if not source_path.is_dir():
+        lines.append("SKIP: --no-docx check, source folder not found")
+        lines.append(f"- missing source folder: {rel_path(source_path)}")
+        lines.append("")
+        return
+
+    out_dir = WORK_DIR / "tender_1_no_docx"
+    result = run_command(
+        [
+            sys.executable,
+            "tender-assistant-skill/run.py",
+            "--input",
+            rel_path(source_path),
+            "--out",
+            rel_path(out_dir),
+            "--top-k",
+            "5",
+            "--min-score",
+            "0",
+            "--no-docx",
+        ],
+        REAL_TENDER_TIMEOUT,
+    )
+    append_command_result(lines, result)
+
+    score_path = out_dir / "tender_score.json"
+    summary_path = out_dir / "tender_summary.md"
+    questions_path = out_dir / "questions_for_customer.md"
+    docx_path = out_dir / DOCX_OUTPUT_NAME
+    score_exists, score_exists_error = safe_exists(score_path)
+    summary_exists, summary_exists_error = safe_exists(summary_path)
+    questions_exists, questions_exists_error = safe_exists(questions_path)
+    docx_exists, docx_exists_error = safe_exists(docx_path)
+    docx_absent = not docx_exists
+    disabled_marker_found = DOCX_DISABLED_MARKER in result["stdout"]
+
+    lines.append(
+        "- files created: "
+        f"tender_score.json={'yes' if score_exists else 'no'}, "
+        f"tender_summary.md={'yes' if summary_exists else 'no'}, "
+        f"questions_for_customer.md={'yes' if questions_exists else 'no'}"
+    )
+    for path_error in [score_exists_error, summary_exists_error, questions_exists_error, docx_exists_error]:
+        if path_error:
+            lines.append(f"- file existence error: {path_error}")
+    lines.append(f"- {DOCX_OUTPUT_NAME} absent: {'yes' if docx_absent else 'no'}")
+    lines.append(f"- no-docx stdout marker: {'OK' if disabled_marker_found else 'FAIL'}")
+    if not docx_absent:
+        lines.append(f"- unexpected {DOCX_OUTPUT_NAME}: {rel_path(docx_path)}")
+    if not disabled_marker_found:
+        lines.append(f"- expected no-docx stdout marker: {DOCX_DISABLED_MARKER}")
+        lines.append(f"- no-docx marker found: {'yes' if disabled_marker_found else 'no'}")
+
+    ok = (
+        result["status"] == "OK"
+        and score_exists
+        and summary_exists
+        and questions_exists
+        and docx_absent
+        and disabled_marker_found
+    )
+    lines.append(f"- --no-docx check: {'OK' if ok else 'FAIL'}")
+    if not ok:
+        failures.append("--no-docx check failed")
+    lines.append("")
+
+
 def make_writable(path: Path) -> None:
     try:
+        current_mode = path.stat().st_mode
         if os.name == "nt":
-            os.chmod(path, stat.S_IWRITE)
+            os.chmod(path, current_mode | stat.S_IREAD | stat.S_IWRITE)
         else:
-            current_mode = path.stat().st_mode
             os.chmod(path, current_mode | stat.S_IWUSR)
     except OSError:
         pass
@@ -910,6 +1013,7 @@ def main() -> int:
     run_help_check(lines, failures)
     run_summary_checks(lines, failures)
     run_real_tender_checks(lines, failures)
+    run_no_docx_check(lines, failures)
     cleanup_outputs(gitignore_info, initial_pycache_dirs, initial_pyc_files, lines, failures)
     run_git_checks(lines, failures)
 
