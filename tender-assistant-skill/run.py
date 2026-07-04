@@ -101,6 +101,11 @@ def main() -> int:
     docx_template_path = _resolve_docx_template_path(args.docx_template)
     docx_path = out_dir / "tender_summary.docx"
     written_docx_path = write_docx_summary(result, docx_template_path, docx_path)
+    written_docx_path = Path(written_docx_path)
+    if not written_docx_path.exists() or written_docx_path.stat().st_size <= 0:
+        raise RuntimeError(
+            "DOCX export completed without error, but tender_summary.docx is missing or empty"
+        )
     print(f"DOCX summary written to: {written_docx_path}")
     return 0
 
