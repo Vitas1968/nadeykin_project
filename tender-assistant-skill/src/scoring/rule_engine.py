@@ -23,6 +23,46 @@ _NEGATIVE_FIELD_KEYS = (
     "Признак нерелевантности / риск ошибки",
 )
 _TERM_SPLIT_RE = re.compile(r"[;,]")
+_MSP_RULE_ID = "msp_restriction"
+_SECURITY_REQUIREMENT_RULE_ID = "security_requirement"
+_EXPLICIT_MSP_OR_DEALER_TERMS = (
+    "субъекты мсп",
+    "субъектов мсп",
+    "субъектами мсп",
+    "субъекты малого и среднего предпринимательства",
+    "субъектов малого и среднего предпринимательства",
+    "субъектами малого и среднего предпринимательства",
+    "малого и среднего предпринимательства",
+    "только мсп",
+    "для мсп",
+    "для смп",
+    "субъекты смп",
+    "субъектов смп",
+    "дилер",
+    "дилера",
+    "дилеру",
+    "партнер",
+    "партнера",
+    "партнеру",
+    "партнёр",
+    "партнёра",
+    "партнёру",
+)
+_SECURITY_NEGATIVE_TERMS = (
+    "обеспечение заявки на участие в закупке | не требуется",
+    "обеспечение заявки не требуется",
+    "обеспечение участия не требуется",
+    "обеспечение исполнения договора | не требуется",
+    "обеспечение исполнения контракта | не требуется",
+    "обеспечение исполнения обязательств по договору | не требуется",
+    "обеспечение исполнения не требуется",
+    "обеспечение договора не требуется",
+    "не требуется обеспечение",
+    "не установлено обеспечение",
+    "обеспечение не установлено",
+    "не предусмотрено обеспечение",
+    "обеспечение не предусмотрено",
+)
 
 
 def _normalize_content_text(value: Any) -> str:
@@ -120,6 +160,48 @@ def _extract_evidence_text(evidence_item: dict[str, Any]) -> str:
                 collected.append(text)
 
     return " ".join(collected)
+
+
+def _extract_evidence_texts(evidence: list[dict[str, Any]]) -> list[str]:
+    texts: list[str] = []
+    for evidence_item in evidence:
+        text = _normalize_content_text(_extract_evidence_text(evidence_item))
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _any_term_in_texts(texts: list[str], terms: tuple[str, ...]) -> bool:
+    return any(term in text for text in texts for term in terms)
+
+
+def _has_explicit_msp_or_dealer_indicator(evidence: list[dict[str, Any]], has_confirming: bool) -> bool:
+    if not has_confirming:
+        return False
+
+    evidence_texts = _extract_evidence_texts(evidence)
+    return _any_term_in_texts(evidence_texts, _EXPLICIT_MSP_OR_DEALER_TERMS)
+
+
+def _evidence_concerns(
+    rule_id: str,
+    evidence: list[dict[str, Any]],
+    has_confirming: bool,
+    explicit_msp_or_dealer_indicator: bool,
+) -> list[str]:
+    if not has_confirming:
+        return []
+
+    evidence_texts = _extract_evidence_texts(evidence)
+    concerns: list[str] = []
+
+    if rule_id == _MSP_RULE_ID and not explicit_msp_or_dealer_indicator:
+        concerns.append("msp_indicator_not_explicit")
+
+    if rule_id == _SECURITY_REQUIREMENT_RULE_ID and _any_term_in_texts(evidence_texts, _SECURITY_NEGATIVE_TERMS):
+        concerns.append("security_requirement_negative_evidence")
+
+    return concerns
 
 
 def _resolve_evidence_list(evidence: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -423,7 +505,12 @@ def _resolve_criterion_matches(criterion: dict[str, Any]) -> list[dict[str, Any]
     return _resolve_matches_from_item(criterion)
 
 
-def _build_rule_comment(status: str, confirming_count: int) -> str:
+def _build_rule_comment(status: str, confirming_count: int, concerns: list[str] | None = None) -> str:
+    concerns = concerns or []
+    if "msp_indicator_not_explicit" in concerns:
+        return "Найденные фрагменты не содержат явного признака МСП/СМП, дилера или партнера; требуется проверка."
+    if "security_requirement_negative_evidence" in concerns:
+        return "Найдено evidence с отрицанием требования обеспечения; требуется ручная проверка."
     if status == "pass":
         return f"Критерий подтвержден найденными фрагментами: {confirming_count}."
     if status == "fail":
@@ -446,6 +533,16 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
 
     has_confirming = bool(confirming_evidence)
     has_negative = bool(negative_evidence)
+    explicit_msp_or_dealer_indicator = (
+        rule_id == _MSP_RULE_ID
+        and _has_explicit_msp_or_dealer_indicator(resolved_evidence, has_confirming)
+    )
+    concerns = _evidence_concerns(
+        rule_id,
+        resolved_evidence,
+        has_confirming,
+        explicit_msp_or_dealer_indicator,
+    )
 
     if has_confirming and has_negative:
         status = "conflict"
@@ -456,15 +553,23 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
     else:
         status = "unknown"
 
+    has_concerns = bool(concerns)
+
     if status in {"fail", "conflict"}:
         risk = "high"
     elif status == "unknown":
         risk = "low" if priority == "low" else "medium"
+    elif has_concerns and priority == "high":
+        risk = "medium"
     else:
         risk = "low"
 
-    human_review_required = status in {"fail", "conflict"} or (status == "unknown" and priority != "low")
-    comment = _build_rule_comment(status, len(confirming_evidence))
+    human_review_required = (
+        status in {"fail", "conflict"}
+        or (status == "unknown" and priority != "low")
+        or (status == "pass" and priority == "high" and has_concerns)
+    )
+    comment = _build_rule_comment(status, len(confirming_evidence), concerns)
 
     return {
         "id": rule_id,
@@ -476,6 +581,8 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
         "risk": risk,
         "human_review_required": human_review_required,
         "comment": comment,
+        "evidence_concerns": concerns,
+        "explicit_dealer_indicator": explicit_msp_or_dealer_indicator,
     }
 
 

@@ -261,12 +261,29 @@ def classify_rules(rules: list[dict[str, Any]]) -> dict[str, Any]:
             stats,
         )
 
+    msp_unconfirmed_pass_rules = [
+        rule
+        for rule in normalized_rules
+        if rule["rule_id"] == MSP_RULE_ID
+        and rule["status"] == "pass"
+        and not rule["explicit_dealer_indicator"]
+    ]
+    for rule in msp_unconfirmed_pass_rules:
+        add_rule_reason(
+            rule,
+            "msp_restriction имеет status pass, но явный МСП/СМП, dealer или partner признак в evidence не найден.",
+        )
+
     if stats["msp_indicator_pass"]:
         msp_pass_rules = [
-            rule for rule in normalized_rules if rule["rule_id"] == MSP_RULE_ID and rule["status"] == "pass"
+            rule
+            for rule in normalized_rules
+            if rule["rule_id"] == MSP_RULE_ID
+            and rule["status"] == "pass"
+            and rule["explicit_dealer_indicator"]
         ]
         for rule in msp_pass_rules:
-            add_rule_reason(rule, "msp_restriction имеет status pass.")
+            add_rule_reason(rule, "msp_restriction имеет явный МСП/СМП, dealer или partner признак.")
         return _make_result(
             "relevant_dealer",
             _confidence_for_success(stats, blocking_criteria),
@@ -309,6 +326,8 @@ def _normalize_rules(rules: Any) -> list[dict[str, Any]]:
                 "priority": _normalize_choice(rule.get("priority"), VALID_PRIORITIES, "medium"),
                 "human_review_required": rule.get("human_review_required") is True,
                 "comment": _text(rule.get("comment"), ""),
+                "evidence_concerns": _list_text(rule.get("evidence_concerns")),
+                "explicit_dealer_indicator": rule.get("explicit_dealer_indicator") is True,
             }
         )
 
@@ -349,7 +368,16 @@ def _build_stats(rules: list[dict[str, Any]]) -> dict[str, Any]:
             1 for rule in rules if rule["human_review_required"] and _is_neutral_rule(rule)
         ),
         "msp_indicator_pass": any(
-            rule["rule_id"] == MSP_RULE_ID and rule["status"] == "pass" for rule in rules
+            rule["rule_id"] == MSP_RULE_ID
+            and rule["status"] == "pass"
+            and rule["explicit_dealer_indicator"]
+            for rule in rules
+        ),
+        "msp_unconfirmed_pass": any(
+            rule["rule_id"] == MSP_RULE_ID
+            and rule["status"] == "pass"
+            and not rule["explicit_dealer_indicator"]
+            for rule in rules
         ),
         "msp_high_risk": any(
             rule["rule_id"] == MSP_RULE_ID and rule["risk"] == "high" for rule in rules
@@ -365,6 +393,12 @@ def _is_neutral_rule(rule: dict[str, Any]) -> bool:
         return False
 
     if rule["rule_id"] == MSP_RULE_ID and rule["status"] in {"fail", "unknown"}:
+        return True
+    if (
+        rule["rule_id"] == MSP_RULE_ID
+        and rule["status"] == "pass"
+        and not rule.get("explicit_dealer_indicator")
+    ):
         return True
 
     return rule["priority"] == "low" and rule["status"] == "unknown"
@@ -409,6 +443,7 @@ def _confidence_for_success(stats: dict[str, Any], blocking_criteria: list[dict[
         and stats["high_unknowns"] == 0
         and not stats["msp_high_risk"]
         and not stats["msp_conflict"]
+        and not stats["msp_unconfirmed_pass"]
         and stats["human_review_rules"] == 0
     ):
         return "high"
@@ -443,6 +478,12 @@ def _text(value: Any, default: str) -> str:
         return default
 
     return str(value)
+
+
+def _list_text(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item not in (None, "")]
 
 
 def main(argv: list[str] | None = None) -> int:

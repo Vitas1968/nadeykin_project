@@ -32,6 +32,11 @@ def _normalized_priority(rule: dict[str, Any]) -> str:
     return (_clean_text(rule.get("priority")) or "").lower()
 
 
+def _has_evidence_concerns(rule: dict[str, Any]) -> bool:
+    concerns = rule.get("evidence_concerns")
+    return isinstance(concerns, list) and any(_clean_text(item) for item in concerns)
+
+
 def _criterion_or_id(rule: dict[str, Any]) -> str:
     return (
         _clean_text(rule.get("criterion"))
@@ -58,6 +63,8 @@ def _needs_question(rule: dict[str, Any]) -> bool:
         return True
     if status == "unknown":
         return _normalized_priority(rule) != "low"
+    if status == "pass":
+        return _normalized_priority(rule) == "high" and _has_evidence_concerns(rule)
     return False
 
 
@@ -119,6 +126,8 @@ def _build_question_text(rule: dict[str, Any]) -> str:
         return f"Проверить негативный признак по критерию: {criterion_or_id}."
     if status == "conflict":
         return f"Разобрать противоречие по критерию: {criterion_or_id}."
+    if status == "pass" and _has_evidence_concerns(rule):
+        return f"Проверить подтверждение по критерию: {criterion_or_id}."
     return f"Проверить критерий вручную: {criterion_or_id}."
 
 
