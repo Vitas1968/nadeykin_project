@@ -122,6 +122,25 @@ class JsonGuardTests(unittest.TestCase):
         self.assertEqual("context-provider", result["provider"])
         self.assertEqual("context-model", result["model"])
 
+    def test_valid_json_falls_back_to_parser_context_for_missing_provider_and_model(self):
+        payload = _valid_payload()
+        del payload["provider"]
+        del payload["model"]
+
+        result = json_guard.parse_llm_verdict(
+            json.dumps(payload),
+            rule_id="context-rule",
+            deterministic_status="pass",
+            provider="context-provider",
+            model="context-model",
+        )
+
+        self.assertEqual("ok", result["invocation_status"])
+        self.assertEqual("context-provider", result["provider"])
+        self.assertEqual("context-model", result["model"])
+        self.assertEqual("context-rule", result["rule_id"])
+        self.assertEqual("pass", result["deterministic_status"])
+
 
 if __name__ == "__main__":
     unittest.main()
