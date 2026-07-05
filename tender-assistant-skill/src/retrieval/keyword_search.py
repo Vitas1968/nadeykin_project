@@ -60,6 +60,32 @@ _QUERY_TOKEN_SHORT_WHITELIST = {
     "ип",
     "ту",
 }
+_GENERIC_SEARCH_TERMS = {
+    "закупка",
+    "закупочный",
+    "закупочная",
+    "процедура",
+    "договор",
+    "контракт",
+    "товар",
+    "поставщик",
+    "покупатель",
+    "участник",
+    "обеспечение",
+    "электронный",
+    "электронная",
+    "электронное",
+    "документ",
+    "документы",
+    "форма",
+    "способ",
+    "заявка",
+    "пользователь",
+    "зарегистрированный",
+    "личный кабинет",
+    "еис",
+}
+_GENERIC_SEARCH_PREFIX_LENGTH = 5
 _DASH_TRANSLATION = str.maketrans(
     {
         "‐": "-",
@@ -178,6 +204,62 @@ def _find_substring_position(text: str, term: str) -> int:
     return text.find(term)
 
 
+def _tokenize_normalized_search_text(normalized_text: str) -> list[str]:
+    return [match.group(0) for match in _SEARCH_TOKEN_RE.finditer(normalized_text)]
+
+
+def _term_token_count(normalized_term: str) -> int:
+    return len(_tokenize_normalized_search_text(normalized_term))
+
+
+def _is_generic_search_token(normalized_token: str) -> bool:
+    if normalized_token in _GENERIC_SEARCH_TERMS:
+        return True
+    for generic_term in _GENERIC_SEARCH_TERMS:
+        if " " in generic_term or len(generic_term) < _GENERIC_SEARCH_PREFIX_LENGTH:
+            continue
+        if normalized_token.startswith(generic_term[:_GENERIC_SEARCH_PREFIX_LENGTH]):
+            return True
+    return False
+
+
+def _is_generic_search_term(normalized_term: str) -> bool:
+    if normalized_term in _GENERIC_SEARCH_TERMS:
+        return True
+    tokens = _tokenize_normalized_search_text(normalized_term)
+    return len(tokens) == 1 and _is_generic_search_token(tokens[0])
+
+
+def _phrase_match_score(normalized_term: str) -> float:
+    if _is_generic_search_term(normalized_term):
+        return 1.0
+    tokens = _tokenize_normalized_search_text(normalized_term)
+    token_count = len(tokens)
+    if token_count > 1:
+        if all(_is_generic_search_token(token) for token in tokens):
+            return 9.0
+        return 8.0 + min(token_count - 2, 2)
+    return 4.0
+
+
+def _token_match_score(normalized_term: str) -> float:
+    if _is_generic_search_term(normalized_term):
+        return 0.4
+    return 1.2
+
+
+def _substring_match_score(normalized_term: str) -> float:
+    if _is_generic_search_term(normalized_term):
+        return 0.2
+    return 0.5
+
+
+def _metadata_match_bonus(normalized_term: str, base_bonus: float) -> float:
+    if _is_generic_search_term(normalized_term):
+        return base_bonus * 0.25
+    return base_bonus
+
+
 def _truncate_snippet(snippet: str, max_chars: int) -> str:
     if len(snippet) <= max_chars:
         return snippet
@@ -284,24 +366,24 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
             position = _find_phrase_position(normalized_text, normalized_term)
             if position < 0:
                 continue
-            text_score += 5.0
+            text_score += _phrase_match_score(normalized_term)
             remember_match(raw_term, "phrase:text")
             if section_text and _find_phrase_position(section_text, normalized_term) >= 0:
-                bonus_score += 1.0
+                bonus_score += _metadata_match_bonus(normalized_term, 1.0)
                 match_reasons.append("phrase:section")
             if file_name_text and _find_phrase_position(file_name_text, normalized_term) >= 0:
-                bonus_score += 0.5
+                bonus_score += _metadata_match_bonus(normalized_term, 0.5)
                 match_reasons.append("phrase:file_name")
             continue
 
         if normalized_term in text_token_set:
-            text_score += 2.0
+            text_score += _token_match_score(normalized_term)
             remember_match(raw_term, "token:text")
             if normalized_term in section_tokens:
-                bonus_score += 0.5
+                bonus_score += _metadata_match_bonus(normalized_term, 0.5)
                 match_reasons.append("token:section")
             if normalized_term in file_name_tokens:
-                bonus_score += 0.5
+                bonus_score += _metadata_match_bonus(normalized_term, 0.5)
                 match_reasons.append("token:file_name")
             continue
 
@@ -309,13 +391,13 @@ def _score_block(block: dict[str, Any], terms: list[dict[str, str]]) -> dict[str
             position = _find_substring_position(normalized_text, normalized_term)
             if position < 0:
                 continue
-            text_score += 1.0
+            text_score += _substring_match_score(normalized_term)
             remember_match(raw_term, "substring:text")
             if normalized_term in section_tokens:
-                bonus_score += 0.5
+                bonus_score += _metadata_match_bonus(normalized_term, 0.5)
                 match_reasons.append("token:section")
             if normalized_term in file_name_tokens:
-                bonus_score += 0.5
+                bonus_score += _metadata_match_bonus(normalized_term, 0.5)
                 match_reasons.append("token:file_name")
 
     if text_score == 0.0:
