@@ -85,7 +85,18 @@ _GENERIC_SEARCH_TERMS = {
     "личный кабинет",
     "еис",
 }
-_GENERIC_SEARCH_PREFIX_LENGTH = 5
+_PROCEDURAL_PHRASES_WITH_LOW_BOOST = {
+    # Base forms are redundant with all-generic check, but kept grouped with word forms.
+    "способ закупки",
+    "способ проведения закупки",
+    "закупочная процедура",
+    "закупочной процедуры",
+    "способ обеспечения",
+    "электронный документ",
+    "электронного документа",
+    "электронные документы",
+    "электронными документами",
+}
 _DASH_TRANSLATION = str.maketrans(
     {
         "‐": "-",
@@ -213,14 +224,7 @@ def _term_token_count(normalized_term: str) -> int:
 
 
 def _is_generic_search_token(normalized_token: str) -> bool:
-    if normalized_token in _GENERIC_SEARCH_TERMS:
-        return True
-    for generic_term in _GENERIC_SEARCH_TERMS:
-        if " " in generic_term or len(generic_term) < _GENERIC_SEARCH_PREFIX_LENGTH:
-            continue
-        if normalized_token.startswith(generic_term[:_GENERIC_SEARCH_PREFIX_LENGTH]):
-            return True
-    return False
+    return normalized_token in _GENERIC_SEARCH_TERMS
 
 
 def _is_generic_search_term(normalized_term: str) -> bool:
@@ -236,8 +240,10 @@ def _phrase_match_score(normalized_term: str) -> float:
     tokens = _tokenize_normalized_search_text(normalized_term)
     token_count = len(tokens)
     if token_count > 1:
+        if normalized_term in _PROCEDURAL_PHRASES_WITH_LOW_BOOST:
+            return 3.0
         if all(_is_generic_search_token(token) for token in tokens):
-            return 9.0
+            return 3.0
         return 8.0 + min(token_count - 2, 2)
     return 4.0
 
