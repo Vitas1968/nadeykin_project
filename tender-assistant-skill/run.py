@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -17,10 +18,25 @@ from scoring.scenario_classifier import classify_scenario
 from output.docx_summary_writer import write_docx_summary
 from output.questions_writer import write_questions
 from output.summary_writer import write_summary
+from llm import classify_criterion, load_config_from_env
+from llm.schema import build_error_verdict, normalize_rule_id, normalize_status
 
 
 REPO_ROOT = PROJECT_ROOT.parent
 DEFAULT_DOCX_TEMPLATE_RELATIVE = "sources_info/Шаблон сводки по тендеру v2.docx"
+LLM_SHADOW_RULE_ID = "procurement_method"
+LLM_SHADOW_DETERMINISTIC_KEYS = (
+    "id",
+    "criterion",
+    "status",
+    "risk",
+    "priority",
+    "human_review_required",
+    "comment",
+    "evidence",
+    "evidence_concerns",
+    "explicit_dealer_indicator",
+)
 
 
 def _resolve_docx_template_path(template_arg: str | None) -> Path:
@@ -52,6 +68,55 @@ def _resolve_docx_template_path(template_arg: str | None) -> Path:
     )
 
 
+def _apply_llm_shadow_verdict(result: dict) -> None:
+    config = load_config_from_env()
+    if not config.enabled:
+        return
+
+    rules = result.get("rules")
+    if not isinstance(rules, list):
+        return
+
+    target_rule = next(
+        (rule for rule in rules if isinstance(rule, dict) and rule.get("id") == LLM_SHADOW_RULE_ID),
+        None,
+    )
+    if target_rule is None:
+        return
+
+    snapshot = {
+        key: copy.deepcopy(target_rule.get(key))
+        for key in LLM_SHADOW_DETERMINISTIC_KEYS
+        if key in target_rule
+    }
+    try:
+        llm_verdict = classify_criterion(target_rule)
+    except Exception as exc:
+        llm_verdict = build_error_verdict(
+            rule_id=normalize_rule_id(target_rule.get("id")),
+            deterministic_status=normalize_status(target_rule.get("status")),
+            provider=config.provider,
+            model=config.model,
+            reason="LLM shadow classification failed.",
+            warnings=[str(exc)],
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+
+    mutated = any(target_rule.get(key) != value for key, value in snapshot.items())
+    mutated = mutated or any(key not in snapshot and key in target_rule for key in LLM_SHADOW_DETERMINISTIC_KEYS)
+    for key in LLM_SHADOW_DETERMINISTIC_KEYS:
+        if key in snapshot:
+            target_rule[key] = snapshot[key]
+        else:
+            target_rule.pop(key, None)
+    if mutated and isinstance(llm_verdict, dict):
+        warnings = list(llm_verdict.get("warnings") or [])
+        warnings.append("Deterministic rule fields were restored after LLM shadow classification.")
+        llm_verdict["warnings"] = warnings
+    target_rule["llm_verdict"] = llm_verdict
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, type=str)
@@ -78,6 +143,7 @@ def main() -> int:
         top_k=args.top_k,
         min_score=args.min_score,
     )
+    _apply_llm_shadow_verdict(result)
     result["scenario_result"] = classify_scenario(result)
 
     out_dir = Path(args.out)
