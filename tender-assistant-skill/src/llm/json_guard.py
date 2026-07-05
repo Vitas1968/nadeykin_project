@@ -128,6 +128,10 @@ def parse_llm_verdict(
             error_type="json_decode_error",
             error_message=str(exc),
         )
+    
+    if isinstance(payload, dict):
+        payload.setdefault("provider", provider)
+        payload.setdefault("model", model)
 
     contract_error = _validate_contract(payload)
     if contract_error:
