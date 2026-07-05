@@ -24,7 +24,17 @@ _NEGATIVE_FIELD_KEYS = (
 )
 _TERM_SPLIT_RE = re.compile(r"[;,]")
 _MSP_RULE_ID = "msp_restriction"
+_PROCUREMENT_METHOD_RULE_ID = "procurement_method"
 _SECURITY_REQUIREMENT_RULE_ID = "security_requirement"
+_PROCUREMENT_METHOD_CONFIRMING_PATTERNS = (
+    re.compile(r"(?<!\w)электронн\w*\s+аукцион\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)аукцион\w*\s+в\s+электронн\w*\s+форм\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)проведени\w*\s+электронн\w*\s+аукцион\w*(?!\w)", re.IGNORECASE),
+    re.compile(
+        r"(?<!\w)электронн\w*\s+аукцион\w*\s+на\s+право\s+заключени\w*\s+договор\w*(?!\w)",
+        re.IGNORECASE,
+    ),
+)
 _EXPLICIT_MSP_OR_DEALER_TERMS = (
     "субъекты мсп",
     "субъектов мсп",
@@ -452,6 +462,13 @@ def is_confirming_evidence(evidence_item: dict[str, Any]) -> bool:
     return bool(_extract_evidence_text(evidence_item).strip())
 
 
+def _is_procurement_method_confirming_evidence(evidence_item: dict[str, Any]) -> bool:
+    evidence_text = _extract_evidence_text(evidence_item)
+    if not evidence_text.strip():
+        return False
+    return any(pattern.search(evidence_text) for pattern in _PROCUREMENT_METHOD_CONFIRMING_PATTERNS)
+
+
 def find_negative_evidence(evidence: list[dict[str, Any]], negative_terms: list[str]) -> list[dict[str, Any]]:
     if not isinstance(evidence, list):
         raise ValueError("evidence must be a list")
@@ -528,6 +545,14 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
     rule_id, block, criterion_text, priority = _resolve_rule_metadata(criterion)
 
     confirming_evidence = [item for item in resolved_evidence if is_confirming_evidence(item)]
+    has_unconfirmed_procurement_method_evidence = False
+    if rule_id == _PROCUREMENT_METHOD_RULE_ID and confirming_evidence:
+        procurement_method_confirming_evidence = [
+            item for item in confirming_evidence if _is_procurement_method_confirming_evidence(item)
+        ]
+        has_unconfirmed_procurement_method_evidence = not procurement_method_confirming_evidence
+        confirming_evidence = procurement_method_confirming_evidence
+
     negative_terms = extract_negative_terms(criterion)
     negative_evidence = find_negative_evidence(resolved_evidence, negative_terms) if negative_terms else []
 
@@ -568,8 +593,12 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
         status in {"fail", "conflict"}
         or (status == "unknown" and priority != "low")
         or (status == "pass" and priority == "high" and has_concerns)
+        or has_unconfirmed_procurement_method_evidence
     )
-    comment = _build_rule_comment(status, len(confirming_evidence), concerns)
+    if has_unconfirmed_procurement_method_evidence and status in {"unknown", "fail"}:
+        comment = "Найдено evidence, но оно не подтверждает способ закупки как электронный аукцион."
+    else:
+        comment = _build_rule_comment(status, len(confirming_evidence), concerns)
 
     return {
         "id": rule_id,
