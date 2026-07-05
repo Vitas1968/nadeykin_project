@@ -105,7 +105,41 @@ python tender-assistant-skill/run.py --input "sources_info/Тендер 1" --out
 - `--docx-template` — путь к DOCX-шаблону сводки, default: `sources_info/Шаблон сводки по тендеру v2.docx`;
 - `--no-docx` — отключает DOCX-выгрузку. Если одновременно указан `--docx-template`, флаг `--no-docx` имеет приоритет, а template path игнорируется.
 
-## 7. DOCX-выгрузка
+## 7. LLM runtime (планируется)
+
+LLM runtime зафиксирован как архитектурное решение, но в текущий pipeline ещё не подключён. Текущий MVP остаётся deterministic-only: `keyword_search` -> `rule_engine` -> `scenario_classifier`.
+
+Планируемое назначение LLM — только классификация `evidence` по отдельным критериям.
+
+Планируемый LLM-вызов получает на вход один критерий и найденные фрагменты документов. Ответ LLM должен быть структурированным JSON.
+
+LLM не должен анализировать весь тендер целиком и не должен принимать итоговое решение об участии. Итоговое решение принимает deterministic pipeline: `rule_engine` + `scenario_classifier`.
+
+Default provider: Ollama.
+
+Default model: `qwen3:4b`.
+
+Base URL: `http://localhost:11434/v1`.
+
+API format: OpenAI-compatible.
+
+Причина выбора `qwen3:4b`:
+
+- бесплатная локальная модель;
+- не требует платного API;
+- подходит для MVP;
+- поддерживает русский язык;
+- достаточно компактна для локального запуска;
+- может быть заменена без переписывания pipeline.
+
+Команды подготовки локальной модели:
+
+```bash
+ollama pull qwen3:4b
+ollama serve
+```
+
+## 8. DOCX-выгрузка
 
 DOCX-сводка формируется модулем:
 
@@ -132,7 +166,7 @@ DOCX-exporter:
 
 На уровне `run.py` дополнительно проверяется, что `tender_summary.docx` существует и имеет размер больше `0`.
 
-## 8. Regression check
+## 9. Regression check
 
 Команда запуска:
 
@@ -164,7 +198,7 @@ python tender-assistant-skill/scripts/regression_check.py
 - exit code `0` означает успешную проверку;
 - exit code `1` означает ошибку.
 
-## 9. Snapshot-сценарии для тестовых тендеров
+## 10. Snapshot-сценарии для тестовых тендеров
 
 Фактические expected scenarios из `regression_check.py`:
 
@@ -174,7 +208,7 @@ python tender-assistant-skill/scripts/regression_check.py
 
 Эти значения являются regression snapshots для текущих тестовых данных. Если бизнес-логика scoring меняется намеренно, expected-сценарии в `regression_check.py` нужно обновлять осознанно.
 
-## 10. Ограничения текущего MVP
+## 11. Ограничения текущего MVP
 
 - Pipeline работает как deterministic-only MVP.
 - LLM-слой в текущий pipeline не добавлен.
@@ -184,7 +218,7 @@ python tender-assistant-skill/scripts/regression_check.py
 - Спорные, противоречивые или неполные случаи должны уходить в `need_human_review` или в вопросы человеку.
 - Результат не является финальным решением без проверки человеком.
 
-## 11. Рекомендуемый порядок работы разработчика
+## 12. Рекомендуемый порядок работы разработчика
 
 1. Перед изменениями:
 
@@ -207,7 +241,7 @@ git diff
 git status --short
 ```
 
-## 12. Следующие планируемые шаги
+## 13. Следующие планируемые шаги
 
 - Улучшение качества `evidence`.
 - Расширение критериев.
