@@ -282,11 +282,7 @@ def mark_conflict_with_rule(llm_verdict: dict[str, Any]) -> dict[str, Any]:
     deterministic_status = normalize_status(llm_verdict.get("deterministic_status"))
     verdict = normalize_status(llm_verdict.get("verdict"))
     result = dict(llm_verdict)
-    if (
-        verdict == VERDICT_UNKNOWN
-        or deterministic_status == VERDICT_UNKNOWN
-        or deterministic_status == verdict
-    ):
+    if deterministic_status == verdict:
         result["conflicts_with_rule"] = False
         return result
 
