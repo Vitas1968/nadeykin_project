@@ -25,6 +25,9 @@ evidence:
 - Используй только переданные evidence.
 - Не добавляй supporting_evidence_ids вне значений `llm_evidence_id` из evidence.
 - Если evidence недостаточно для уверенного вывода, верни `verdict="unknown"` и `confidence="low"`.
+- Если `verdict="unknown"`, не указывай supporting evidence: верни `supporting_evidence_ids=[]`.
+- Если `verdict="unknown"`, поставь `human_review_required=true`.
+- `supporting_evidence_ids` можно заполнять только для `verdict="pass"`, `verdict="fail"` или `verdict="conflict"`, когда конкретные evidence действительно подтверждают вывод.
 - Если deterministic_status и твой verdict расходятся, поставь `conflicts_with_rule=true` и добавь короткое предупреждение в `warnings`.
 - Для `procurement_method` классифицируй только способ закупки, а не электронный документооборот.
 - Текст `criterion` не является evidence. Нельзя ставить `pass` только потому, что в criterion написано "электронный аукцион".
