@@ -129,7 +129,7 @@ SECURITY_REQUIREMENT_TYPE_MARKERS = (
     "обеспечение договора",
     "обеспечения договора",
 )
-SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS = (
+SECURITY_REQUIREMENT_STRONG_POSITIVE_CONTEXT_MARKERS = (
     "требуется",
     "установлено",
     "предусмотрено",
@@ -137,6 +137,8 @@ SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS = (
     "составляет",
     "%",
     "руб",
+)
+SECURITY_REQUIREMENT_ACTION_POSITIVE_CONTEXT_MARKERS = (
     "предоставляется",
     "предоставить",
     "вносится",
@@ -156,6 +158,20 @@ SECURITY_REQUIREMENT_INSTRUMENT_MARKERS = (
     "спецсчет",
     "специальный счет",
     "реквизиты",
+)
+SECURITY_REQUIREMENT_REPLACEMENT_CONTEXT_MARKERS = (
+    "новое обеспечение",
+    "замена обеспечения",
+    "заменить обеспечение",
+    "предоставить новое обеспечение",
+    "взамен",
+    "лицензии на осуществление банковских операций",
+    "не позднее 1",
+    "надлежащего уведомления",
+    "в случае его изменения",
+    "в случае изменения",
+    "отзыв",
+    "прекращение действия",
 )
 
 
@@ -313,11 +329,21 @@ def _security_requirement_item_guardrail_verdict(item: dict) -> str | None:
         SECURITY_REQUIREMENT_NEGATIVE_CONTEXT_MARKERS,
     )
     text_without_negative_context = _text_without_markers(text, SECURITY_REQUIREMENT_NEGATIVE_CONTEXT_MARKERS)
-    has_positive_context = _any_markers_are_near(
+    has_strong_positive_context = _any_markers_are_near(
         text_without_negative_context,
         SECURITY_REQUIREMENT_TYPE_MARKERS,
-        SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS,
+        SECURITY_REQUIREMENT_STRONG_POSITIVE_CONTEXT_MARKERS,
     )
+    has_action_positive_context = _any_markers_are_near(
+        text_without_negative_context,
+        SECURITY_REQUIREMENT_TYPE_MARKERS,
+        SECURITY_REQUIREMENT_ACTION_POSITIVE_CONTEXT_MARKERS,
+    )
+    has_replacement_context = _contains_any_marker(text, SECURITY_REQUIREMENT_REPLACEMENT_CONTEXT_MARKERS)
+    has_positive_context = has_strong_positive_context or (
+        has_action_positive_context and not has_replacement_context
+    )
+
     if has_positive_context and has_negative_context:
         return "conflict"
     if has_positive_context:
