@@ -84,6 +84,47 @@ class ShadowIntegrationTests(unittest.TestCase):
         self.assertTrue(llm_verdict["human_review_required"])
         self.assertEqual(pipeline_run.SECURITY_REQUIREMENT_SKIP_REASON, llm_verdict["reason"])
 
+    def _assert_purchase_type_goods_evidence_skips_as_redundant(self, evidence):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = evidence if isinstance(evidence, list) else [{"text": evidence}]
+        result = _result(purchase_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        llm_verdict = purchase_rule["llm_verdict"]
+        self.assertEqual("skipped", llm_verdict["invocation_status"])
+        self.assertEqual("pass", llm_verdict["verdict"])
+        self.assertEqual("high", llm_verdict["confidence"])
+        self.assertFalse(llm_verdict["human_review_required"])
+        self.assertFalse(llm_verdict["conflicts_with_rule"])
+        self.assertEqual(pipeline_run.PURCHASE_TYPE_GOODS_REDUNDANT_SKIP_REASON, llm_verdict["reason"])
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+
+    def _assert_purchase_type_evidence_allows_classifier(self, evidence, llm_verdict=None):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = evidence if isinstance(evidence, list) else [{"text": evidence}]
+        result = _result(purchase_rule)
+        llm_verdict = llm_verdict or {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+        self.assertEqual(llm_verdict, purchase_rule["llm_verdict"])
+
     def test_disabled_mode_skips_without_llm_verdict_or_classifier_call(self):
         core_rule = _rule("subject_okpd2_oil")
         procurement_rule = _rule("procurement_method")
@@ -399,7 +440,9 @@ class ShadowIntegrationTests(unittest.TestCase):
 
     def test_weak_purchase_type_quantity_evidence_skips_classifier(self):
         purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"text": "Количество: 100 литров. Позиция 1. Масло."}]
+        # This remains weak evidence: current goods patterns require explicit supply/transfer phrasing,
+        # not a quantity phrase with "товара" alone.
+        purchase_rule["evidence"] = [{"text": "Количество поставляемого товара: 100 литров."}]
         result = _result(purchase_rule)
         deterministic_before = _deterministic_rules(result)
         scenario_before = _scenario(result)
@@ -415,7 +458,9 @@ class ShadowIntegrationTests(unittest.TestCase):
         llm_verdict = purchase_rule["llm_verdict"]
         self.assertEqual("skipped", llm_verdict["invocation_status"])
         self.assertEqual("unknown", llm_verdict["verdict"])
+        self.assertEqual("low", llm_verdict["confidence"])
         self.assertTrue(llm_verdict["human_review_required"])
+        self.assertEqual(pipeline_run.PURCHASE_TYPE_GOODS_WEAK_SKIP_REASON, llm_verdict["reason"])
         self.assertEqual(deterministic_before, _deterministic_rules(result))
         self.assertEqual(scenario_before, _scenario(result))
 
@@ -434,67 +479,45 @@ class ShadowIntegrationTests(unittest.TestCase):
         classify_mock.assert_not_called()
         self.assertEqual("skipped", purchase_rule["llm_verdict"]["invocation_status"])
 
-    def test_strong_purchase_type_goods_evidence_allows_classifier(self):
-        purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
-        result = _result(purchase_rule)
-        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+    def test_purchase_type_goods_only_explicit_supply_skips_classifier_as_intentional_tradeoff(self):
+        """Intentional coverage/cost trade-off: clear goods-only evidence skips redundant LLM shadow."""
+        phrases = (
+            "Поставка товара осуществляется по заявкам заказчика.",
+            "Поставка товара должна осуществляться в сроки.",
+            "Передача товара.",
+        )
 
-        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
-            pipeline_run,
-            "classify_criterion",
-            return_value=llm_verdict,
-        ) as classify_mock:
-            pipeline_run._apply_llm_shadow_verdict(result)
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self._assert_purchase_type_goods_evidence_skips_as_redundant(phrase)
 
-        classify_mock.assert_called_once_with(purchase_rule)
-        self.assertEqual(llm_verdict, purchase_rule["llm_verdict"])
+    def test_purchase_type_goods_only_supplier_phrase_skips_classifier(self):
+        self._assert_purchase_type_goods_evidence_skips_as_redundant("Поставщик поставляет товар.")
 
-    def test_strong_purchase_type_goods_word_form_allows_classifier(self):
-        purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"text": "Товар был поставлен покупателю в согласованный срок."}]
-        result = _result(purchase_rule)
-        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
-
-        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
-            pipeline_run,
-            "classify_criterion",
-            return_value=llm_verdict,
-        ) as classify_mock:
-            pipeline_run._apply_llm_shadow_verdict(result)
-
-        classify_mock.assert_called_once_with(purchase_rule)
-        self.assertEqual(llm_verdict, purchase_rule["llm_verdict"])
+    def test_purchase_type_goods_only_buyer_accepts_goods_skips_classifier(self):
+        self._assert_purchase_type_goods_evidence_skips_as_redundant("Покупатель принимает товар.")
 
     def test_strong_purchase_type_service_work_evidence_allows_classifier(self):
-        purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"text": "Оказание услуг по замене масла в оборудовании."}]
-        result = _result(purchase_rule)
-        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+        phrases = (
+            "Оказание услуг по замене масла в оборудовании.",
+            "Выполнение работ.",
+            "Техническое обслуживание.",
+            "Ремонт оборудования.",
+            "Монтаж оборудования.",
+        )
 
-        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
-            pipeline_run,
-            "classify_criterion",
-            return_value=llm_verdict,
-        ) as classify_mock:
-            pipeline_run._apply_llm_shadow_verdict(result)
-
-        classify_mock.assert_called_once_with(purchase_rule)
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self._assert_purchase_type_evidence_allows_classifier(
+                    phrase,
+                    {"invocation_status": "ok", "verdict": "fail", "warnings": []},
+                )
 
     def test_purchase_type_service_work_provision_evidence_allows_classifier(self):
-        purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"text": "Предоставление услуг по техническому обслуживанию оборудования."}]
-        result = _result(purchase_rule)
-        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
-
-        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
-            pipeline_run,
-            "classify_criterion",
-            return_value=llm_verdict,
-        ) as classify_mock:
-            pipeline_run._apply_llm_shadow_verdict(result)
-
-        classify_mock.assert_called_once_with(purchase_rule)
+        self._assert_purchase_type_evidence_allows_classifier(
+            "Предоставление услуг по техническому обслуживанию оборудования.",
+            {"invocation_status": "ok", "verdict": "fail", "warnings": []},
+        )
 
     def test_conflict_purchase_type_goods_and_service_evidence_allows_classifier(self):
         purchase_rule = _rule("purchase_type_goods")
@@ -514,39 +537,34 @@ class ShadowIntegrationTests(unittest.TestCase):
 
         classify_mock.assert_called_once_with(purchase_rule)
 
-    def test_purchase_type_goods_snippet_fallback_allows_classifier(self):
-        purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"snippet": "Покупатель принимает товар после поставки."}]
-        result = _result(purchase_rule)
-        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+    def test_conflict_purchase_type_goods_and_service_in_one_item_allows_classifier(self):
+        self._assert_purchase_type_evidence_allows_classifier(
+            "Поставка товара и оказание услуг по монтажу.",
+            {"invocation_status": "ok", "verdict": "unknown", "warnings": []},
+        )
 
-        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
-            pipeline_run,
-            "classify_criterion",
-            return_value=llm_verdict,
-        ) as classify_mock:
-            pipeline_run._apply_llm_shadow_verdict(result)
+    def test_purchase_type_goods_only_tender_2_evidence_set_skips_classifier_as_redundant(self):
+        self._assert_purchase_type_goods_evidence_skips_as_redundant(
+            [
+                {"text": "Поставка товара осуществляется по заявкам заказчика."},
+                {"text": "Поставка товара должна осуществляться в сроки."},
+                {"text": "Поставщик поставляет товар."},
+            ]
+        )
 
-        classify_mock.assert_called_once_with(purchase_rule)
+    def test_purchase_type_goods_snippet_fallback_skips_classifier(self):
+        self._assert_purchase_type_goods_evidence_skips_as_redundant(
+            [{"snippet": "Покупатель принимает товар после поставки."}]
+        )
 
-    def test_purchase_type_goods_block_text_fallback_allows_classifier(self):
-        purchase_rule = _rule("purchase_type_goods")
-        purchase_rule["evidence"] = [{"block": {"text": "Передача товара подтверждается накладной."}}]
-        result = _result(purchase_rule)
-        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
-
-        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
-            pipeline_run,
-            "classify_criterion",
-            return_value=llm_verdict,
-        ) as classify_mock:
-            pipeline_run._apply_llm_shadow_verdict(result)
-
-        classify_mock.assert_called_once_with(purchase_rule)
+    def test_purchase_type_goods_block_text_fallback_skips_classifier(self):
+        self._assert_purchase_type_goods_evidence_skips_as_redundant(
+            [{"block": {"text": "Передача товара подтверждается накладной."}}]
+        )
 
     def test_purchase_type_goods_llm_exception_becomes_error_verdict(self):
         purchase_rule = _rule("purchase_type_goods", status="unknown", risk="medium")
-        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        purchase_rule["evidence"] = [{"text": "Оказание услуг по замене масла в оборудовании."}]
         result = _result(purchase_rule)
         deterministic_before = _deterministic_rules(result)
 
@@ -563,7 +581,7 @@ class ShadowIntegrationTests(unittest.TestCase):
 
     def test_purchase_type_goods_shadow_verdict_cannot_change_deterministic_fields(self):
         purchase_rule = _rule("purchase_type_goods", status="pass", risk="low")
-        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        purchase_rule["evidence"] = [{"text": "Оказание услуг по замене масла в оборудовании."}]
         result = _result(purchase_rule)
         deterministic_before = _deterministic_rules(result)
         scenario_before = _scenario(result)

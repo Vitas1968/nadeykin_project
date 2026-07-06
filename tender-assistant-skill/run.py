@@ -84,6 +84,10 @@ PURCHASE_TYPE_SERVICE_WORK_LLM_ALLOWED_PATTERNS = (
     re.compile(r"\bдиагностик\w*\s+оборудовани\w*\b"),
     re.compile(r"\bпроведени\w*\s+диагностик\w*\b"),
 )
+PURCHASE_TYPE_GOODS_REDUNDANT_SKIP_REASON = (
+    "Evidence explicitly confirms goods supply without service/work conflict; LLM shadow skipped as redundant."
+)
+PURCHASE_TYPE_GOODS_WEAK_SKIP_REASON = "Evidence does not contain explicit goods supply or service/work phrase."
 MSP_RESTRICTION_SKIP_REASON = (
     "Evidence does not contain explicit SME-only restriction or explicit absence of SME restriction."
 )
@@ -408,14 +412,29 @@ def _purchase_type_goods_evidence_allows_llm(rule: dict) -> bool:
     if not isinstance(evidence, list):
         return False
 
+    has_service_work_evidence = False
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+
+        text = _evidence_item_text(item).lower()
+        if any(pattern.search(text) for pattern in PURCHASE_TYPE_SERVICE_WORK_LLM_ALLOWED_PATTERNS):
+            has_service_work_evidence = True
+
+    return has_service_work_evidence
+
+
+def _purchase_type_goods_evidence_has_goods(rule: dict) -> bool:
+    evidence = rule.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+
     for item in evidence:
         if not isinstance(item, dict):
             continue
 
         text = _evidence_item_text(item).lower()
         if any(pattern.search(text) for pattern in PURCHASE_TYPE_GOODS_LLM_ALLOWED_PATTERNS):
-            return True
-        if any(pattern.search(text) for pattern in PURCHASE_TYPE_SERVICE_WORK_LLM_ALLOWED_PATTERNS):
             return True
 
     return False
@@ -449,7 +468,9 @@ def _llm_shadow_skip_reason(rule: dict) -> str | None:
     if rule_id == LLM_SHADOW_RULE_ID and not _procurement_method_evidence_allows_llm(rule):
         return "Evidence does not contain explicit procurement method phrase."
     if rule_id == PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID and not _purchase_type_goods_evidence_allows_llm(rule):
-        return "Evidence does not contain explicit goods supply or service/work phrase."
+        if _purchase_type_goods_evidence_has_goods(rule):
+            return PURCHASE_TYPE_GOODS_REDUNDANT_SKIP_REASON
+        return PURCHASE_TYPE_GOODS_WEAK_SKIP_REASON
     if rule_id == MSP_RESTRICTION_LLM_SHADOW_RULE_ID and not _msp_restriction_evidence_allows_llm(rule):
         return MSP_RESTRICTION_SKIP_REASON
     if rule_id == SECURITY_REQUIREMENT_LLM_SHADOW_RULE_ID and not guardrail_security_requirement(rule):
@@ -477,13 +498,28 @@ def _apply_llm_shadow_verdict(result: dict) -> None:
     for target_rule in target_rules:
         skip_reason = _llm_shadow_skip_reason(target_rule)
         if skip_reason is not None:
+            skipped_verdict_args = {
+                "reason": skip_reason,
+                "human_review_required": True,
+            }
+            # This is an intentional coverage/cost trade-off: for explicit goods-only evidence,
+            # LLM shadow is skipped as redundant to reduce latency and cost. Ambiguous,
+            # service/work, and conflict cases still call LLM.
+            if (
+                normalize_rule_id(target_rule.get("id")) == PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID
+                and skip_reason == PURCHASE_TYPE_GOODS_REDUNDANT_SKIP_REASON
+            ):
+                skipped_verdict_args.update(
+                    verdict="pass",
+                    confidence="high",
+                    human_review_required=False,
+                )
             target_rule["llm_verdict"] = build_skipped_verdict(
                 rule_id=normalize_rule_id(target_rule.get("id")),
                 deterministic_status=normalize_status(target_rule.get("status")),
                 provider=config.provider,
                 model=config.model,
-                reason=skip_reason,
-                human_review_required=True,
+                **skipped_verdict_args,
             )
             continue
 
