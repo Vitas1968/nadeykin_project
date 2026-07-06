@@ -106,6 +106,71 @@ class ProcurementMethodScoringTests(unittest.TestCase):
 
                 self.assertNotIn(result["status"], {"fail", "conflict"})
 
+    def test_auction_with_template_list_is_pass_low_no_review(self):
+        result = rule_engine.evaluate_criterion(
+            _criterion(),
+            evidence=_evidence(
+                "способ закупки | аукцион в электронной форме участниками которого могут быть только субъекты мсп.",
+                (
+                    "указать один из следующих вариантов первой части заявки / второй части заявки - "
+                    "для конкурса аукциона запроса предложений предложение о цене договора - "
+                    "для конкурса запроса предложений заявки - для запроса котировок"
+                ),
+            ),
+        )
+
+        self.assertProcurementPassLowNoReview(result)
+
+    def test_auction_with_template_deletion_instruction_is_pass_low_no_review(self):
+        result = rule_engine.evaluate_criterion(
+            _criterion(),
+            evidence=_evidence(
+                "способ закупки | аукцион в электронной форме участниками которого могут быть только субъекты мсп.",
+                (
+                    "дополнение в случае конкурса запроса предложений иначе при аукционе "
+                    "запросе котировок вся строка 3 таблицы удаляется"
+                ),
+            ),
+        )
+
+        self.assertProcurementPassLowNoReview(result)
+
+    def test_template_instruction_patterns_do_not_fail_or_conflict_individually(self):
+        phrases = [
+            "указать один из следующих вариантов заявки - для запроса котировок",
+            "для конкурса аукциона запроса предложений",
+            "дополнение в случае конкурса запроса предложений",
+            "иначе при аукционе запросе котировок",
+            "запрос котировок вся строка 12 таблицы удаляется",
+        ]
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                result = rule_engine.evaluate_criterion(_criterion(), evidence=_evidence(phrase))
+
+                self.assertProcurementUnknownMediumReview(result)
+
+    def test_request_for_proposals_with_method_wording_is_fail_high_review(self):
+        result = rule_engine.evaluate_criterion(
+            _criterion(),
+            evidence=_evidence("Способ закупки указан как запрос предложений."),
+        )
+
+        self.assertProcurementFailHighReview(result)
+
+    def test_legacy_auction_wordings_are_pass_low_no_review(self):
+        phrases = [
+            "Закупка проводится как электронный аукцион.",
+            "Процедура является аукционом в электронной форме.",
+            "Документация размещена для проведения электронного аукциона.",
+        ]
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                result = rule_engine.evaluate_criterion(_criterion(), evidence=_evidence(phrase))
+
+                self.assertProcurementPassLowNoReview(result)
+
     def test_auction_and_request_for_proposals_is_conflict_high_review(self):
         result = rule_engine.evaluate_criterion(
             _criterion(),

@@ -51,6 +51,13 @@ _PROCUREMENT_METHOD_FALSE_POSITIVE_PATTERNS = (
     re.compile(r"(?<!\w)конкурсн\w*\s+комисси\w*(?!\w)", re.IGNORECASE),
     re.compile(r"(?<!\w)конкурсн\w*\s+производств\w*(?!\w)", re.IGNORECASE),
 )
+_PROCUREMENT_METHOD_TEMPLATE_INSTRUCTION_PATTERNS = (
+    re.compile(r"(?<!\w)указать\s+один\s+из\s+следующих\s+вариантов(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)для\s+конкурса\s+аукциона\s+запроса\s+предложений(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)дополнение\s+в\s+случае\s+конкурса(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)иначе\s+при\s+аукционе(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)вся\s+строка(?:\s+\d+)?(?:\s+таблиц\w*)?\s+удаляется(?!\w)", re.IGNORECASE),
+)
 _PROCUREMENT_METHOD_WEAK_PATTERNS = (
     re.compile(r"(?<!\w)электронн\w*\s+документ\w*(?!\w)", re.IGNORECASE),
     re.compile(r"(?<!\w)электронн\w*\s+подпис\w*(?!\w)", re.IGNORECASE),
@@ -528,9 +535,17 @@ def _procurement_method_text_matches(
     return any(pattern.search(evidence_text) for pattern in patterns)
 
 
+def _is_procurement_method_template_instruction(normalized_text: str) -> bool:
+    if not normalized_text:
+        return False
+    return any(pattern.search(normalized_text) for pattern in _PROCUREMENT_METHOD_TEMPLATE_INSTRUCTION_PATTERNS)
+
+
 def _is_procurement_method_non_auction_evidence(evidence_item: dict[str, Any]) -> bool:
     evidence_text = _normalize_content_text(_extract_evidence_text(evidence_item))
     if not evidence_text:
+        return False
+    if _is_procurement_method_template_instruction(evidence_text):
         return False
     for false_positive_pattern in _PROCUREMENT_METHOD_FALSE_POSITIVE_PATTERNS:
         evidence_text = false_positive_pattern.sub(" ", evidence_text)
