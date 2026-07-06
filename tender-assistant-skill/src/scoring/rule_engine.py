@@ -58,20 +58,25 @@ _EXPLICIT_MSP_OR_DEALER_TERMS = (
     "партнёра",
     "партнёру",
 )
-_SECURITY_NEGATIVE_TERMS = (
-    "обеспечение заявки на участие в закупке не требуется",
-    "обеспечение заявки не требуется",
-    "обеспечение участия не требуется",
-    "обеспечение исполнения договора не требуется",
-    "обеспечение исполнения контракта не требуется",
-    "обеспечение исполнения обязательств по договору не требуется",
-    "обеспечение исполнения не требуется",
-    "обеспечение договора не требуется",
-    "не требуется обеспечение",
-    "не установлено обеспечение",
-    "обеспечение не установлено",
-    "не предусмотрено обеспечение",
-    "обеспечение не предусмотрено",
+_SECURITY_NEGATIVE_PATTERNS = (
+    re.compile(r"обеспечение\s+заявки(?:\s+на\s+участие\s+в\s+закупке)?\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+участия\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+исполнения\s+договора\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+исполнения\s+контракта\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+исполнения\s+обязательств\s+по\s+договору\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+исполнения\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+договора\s+не\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"не\s+требуется\s+обеспечение(?=$|\W)", re.IGNORECASE),
+    re.compile(r"не\s+установлено\s+обеспечение(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение(?:\s+\S+){0,12}\s+не\s+установлено(?=$|\W)", re.IGNORECASE),
+    re.compile(r"не\s+предусмотрено\s+обеспечение(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение(?:\s+\S+){0,12}\s+не\s+предусмотрено(?=$|\W)", re.IGNORECASE),
+)
+_SECURITY_STRONG_REQUIREMENT_PATTERNS = (
+    re.compile(r"размер\s+обеспечения\s+исполнения\s+(?:договора|контракта)\s+составляет\b", re.IGNORECASE),
+    re.compile(r"обеспечение\s+исполнения\s+(?:договора|контракта)\s+требуется(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+заявки\s+установлено(?=$|\W)", re.IGNORECASE),
+    re.compile(r"обеспечение\s+заявки\s+составляет\b", re.IGNORECASE),
 )
 
 
@@ -181,6 +186,24 @@ def _extract_evidence_texts(evidence: list[dict[str, Any]]) -> list[str]:
     return texts
 
 
+def _normalize_security_requirement_text(value: Any) -> str:
+    return " ".join(_normalize_content_text(value).replace("|", " ").split())
+
+
+def _find_security_requirement_evidence(
+    evidence: list[dict[str, Any]],
+    patterns: tuple[re.Pattern[str], ...],
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for evidence_item in evidence:
+        if not isinstance(evidence_item, dict):
+            continue
+        evidence_text = _normalize_security_requirement_text(_extract_evidence_text(evidence_item))
+        if evidence_text and any(pattern.search(evidence_text) for pattern in patterns):
+            matches.append(dict(evidence_item))
+    return matches
+
+
 def _any_term_in_texts(texts: list[str], terms: tuple[str, ...]) -> bool:
     return any(term in text for text in texts for term in terms)
 
@@ -207,9 +230,6 @@ def _evidence_concerns(
 
     if rule_id == _MSP_RULE_ID and not explicit_msp_or_dealer_indicator:
         concerns.append("msp_indicator_not_explicit")
-
-    if rule_id == _SECURITY_REQUIREMENT_RULE_ID and _any_term_in_texts(evidence_texts, _SECURITY_NEGATIVE_TERMS):
-        concerns.append("security_requirement_negative_evidence")
 
     return concerns
 
@@ -526,8 +546,6 @@ def _build_rule_comment(status: str, confirming_count: int, concerns: list[str] 
     concerns = concerns or []
     if "msp_indicator_not_explicit" in concerns:
         return "Найденные фрагменты не содержат явного признака МСП/СМП, дилера или партнера; требуется проверка."
-    if "security_requirement_negative_evidence" in concerns:
-        return "Найдено evidence с отрицанием требования обеспечения; требуется ручная проверка."
     if status == "pass":
         return f"Критерий подтвержден найденными фрагментами: {confirming_count}."
     if status == "fail":
@@ -568,6 +586,42 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
         has_confirming,
         explicit_msp_or_dealer_indicator,
     )
+    if rule_id == _SECURITY_REQUIREMENT_RULE_ID:
+        security_negative_evidence = _find_security_requirement_evidence(
+            resolved_evidence,
+            _SECURITY_NEGATIVE_PATTERNS,
+        )
+        security_strong_evidence = _find_security_requirement_evidence(
+            resolved_evidence,
+            _SECURITY_STRONG_REQUIREMENT_PATTERNS,
+        )
+        if security_negative_evidence:
+            if security_strong_evidence:
+                status = "conflict"
+                risk = "high"
+                human_review_required = True
+                concerns = ["security_requirement_conflicting_evidence"]
+                comment = "Найдено противоречивое evidence: отрицание и требование обеспечения одновременно."
+            else:
+                status = "pass"
+                risk = "low"
+                human_review_required = False
+                concerns = []
+                comment = "Обеспечение заявки/исполнения договора не требуется."
+
+            return {
+                "id": rule_id,
+                "block": block,
+                "criterion": criterion_text,
+                "priority": priority,
+                "evidence": resolved_evidence,
+                "status": status,
+                "risk": risk,
+                "human_review_required": human_review_required,
+                "comment": comment,
+                "evidence_concerns": concerns,
+                "explicit_dealer_indicator": explicit_msp_or_dealer_indicator,
+            }
 
     if has_confirming and has_negative:
         status = "conflict"
