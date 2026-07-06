@@ -26,6 +26,8 @@ from llm.schema import build_error_verdict, build_skipped_verdict, normalize_rul
 REPO_ROOT = PROJECT_ROOT.parent
 DEFAULT_DOCX_TEMPLATE_RELATIVE = "sources_info/Шаблон сводки по тендеру v2.docx"
 LLM_SHADOW_RULE_ID = "procurement_method"
+PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID = "purchase_type_goods"
+LLM_SHADOW_RULE_IDS = (LLM_SHADOW_RULE_ID, PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID)
 LLM_SHADOW_DETERMINISTIC_KEYS = (
     "id",
     "criterion",
@@ -54,6 +56,26 @@ PROCUREMENT_METHOD_LLM_ALLOWED_PATTERNS = (
 )
 PROCUREMENT_METHOD_AUCTION_ELECTRONIC_PROXIMITY_PATTERN = re.compile(
     r"\bаукцион\w*\b[\s\S]{0,80}\bэлектрон\w*\b|\bэлектрон\w*\b[\s\S]{0,80}\bаукцион\w*\b"
+)
+PURCHASE_TYPE_GOODS_LLM_ALLOWED_PATTERNS = (
+    re.compile(r"\bпоставк\w*\s+товар\w*\b"),
+    re.compile(r"\bпоставщик\w*\s+поставля\w*\s+товар\w*\b"),
+    re.compile(r"\bпокупател\w*\s+принима\w*\s+товар\w*\b"),
+    re.compile(r"\bпередач\w*\s+товар\w*\b"),
+    re.compile(r"\bтовар\w*\s+поставля\w*\b"),
+    re.compile(r"\bтовар\w*(?:\s+\w+){0,3}\s+поставлен\w*\b"),
+)
+PURCHASE_TYPE_SERVICE_WORK_LLM_ALLOWED_PATTERNS = (
+    re.compile(r"\bоказани\w*\s+услуг\w*\b"),
+    re.compile(r"\bпредоставлени\w*\s+услуг\w*\b"),
+    re.compile(r"\bуслуг\w*\s+по\s+замен\w*\s+масл\w*\b"),
+    re.compile(r"\bвыполнени\w*\s+работ\w*\b"),
+    re.compile(r"\bтехническ\w*\s+обслуживани\w*\b"),
+    re.compile(r"\bмонтаж\w*\b"),
+    re.compile(r"\bустановк\w*\s+оборудовани\w*\b"),
+    re.compile(r"\bремонт\w*\s+оборудовани\w*\b"),
+    re.compile(r"\bдиагностик\w*\s+оборудовани\w*\b"),
+    re.compile(r"\bпроведени\w*\s+диагностик\w*\b"),
 )
 
 
@@ -86,6 +108,17 @@ def _resolve_docx_template_path(template_arg: str | None) -> Path:
     )
 
 
+def _evidence_item_text(item: dict) -> str:
+    text = item.get("text")
+    if text is None or not str(text).strip():
+        text = item.get("snippet")
+    if text is None or not str(text).strip():
+        block = item.get("block")
+        text = block.get("text", "") if isinstance(block, dict) else ""
+    return str(text)
+
+
+# Non-target rules are allowed if guardrail helpers are reused directly.
 def _procurement_method_evidence_allows_llm(rule: dict) -> bool:
     if normalize_rule_id(rule.get("id")) != LLM_SHADOW_RULE_ID:
         return True
@@ -97,20 +130,44 @@ def _procurement_method_evidence_allows_llm(rule: dict) -> bool:
     for item in evidence:
         if not isinstance(item, dict):
             continue
-        text = item.get("text")
-        if text is None or not str(text).strip():
-            text = item.get("snippet")
-        if text is None or not str(text).strip():
-            block = item.get("block")
-            text = block.get("text", "") if isinstance(block, dict) else ""
 
-        text = str(text).lower()
+        text = _evidence_item_text(item).lower()
         if any(pattern.search(text) for pattern in PROCUREMENT_METHOD_LLM_ALLOWED_PATTERNS):
             return True
         if PROCUREMENT_METHOD_AUCTION_ELECTRONIC_PROXIMITY_PATTERN.search(text):
             return True
 
     return False
+
+
+def _purchase_type_goods_evidence_allows_llm(rule: dict) -> bool:
+    if normalize_rule_id(rule.get("id")) != PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID:
+        return True
+
+    evidence = rule.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+
+        text = _evidence_item_text(item).lower()
+        if any(pattern.search(text) for pattern in PURCHASE_TYPE_GOODS_LLM_ALLOWED_PATTERNS):
+            return True
+        if any(pattern.search(text) for pattern in PURCHASE_TYPE_SERVICE_WORK_LLM_ALLOWED_PATTERNS):
+            return True
+
+    return False
+
+
+def _llm_shadow_skip_reason(rule: dict) -> str | None:
+    rule_id = normalize_rule_id(rule.get("id"))
+    if rule_id == LLM_SHADOW_RULE_ID and not _procurement_method_evidence_allows_llm(rule):
+        return "Evidence does not contain explicit procurement method phrase."
+    if rule_id == PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID and not _purchase_type_goods_evidence_allows_llm(rule):
+        return "Evidence does not contain explicit goods supply or service/work phrase."
+    return None
 
 
 def _apply_llm_shadow_verdict(result: dict) -> None:
@@ -122,55 +179,58 @@ def _apply_llm_shadow_verdict(result: dict) -> None:
     if not isinstance(rules, list):
         return
 
-    target_rule = next(
-        (rule for rule in rules if isinstance(rule, dict) and rule.get("id") == LLM_SHADOW_RULE_ID),
-        None,
-    )
-    if target_rule is None:
+    target_rules = [
+        rule
+        for rule in rules
+        if isinstance(rule, dict) and normalize_rule_id(rule.get("id")) in LLM_SHADOW_RULE_IDS
+    ]
+    if not target_rules:
         return
 
-    if not _procurement_method_evidence_allows_llm(target_rule):
-        target_rule["llm_verdict"] = build_skipped_verdict(
-            rule_id=normalize_rule_id(target_rule.get("id")),
-            deterministic_status=normalize_status(target_rule.get("status")),
-            provider=config.provider,
-            model=config.model,
-            reason="Evidence does not contain explicit procurement method phrase.",
-            human_review_required=True,
-        )
-        return
+    for target_rule in target_rules:
+        skip_reason = _llm_shadow_skip_reason(target_rule)
+        if skip_reason is not None:
+            target_rule["llm_verdict"] = build_skipped_verdict(
+                rule_id=normalize_rule_id(target_rule.get("id")),
+                deterministic_status=normalize_status(target_rule.get("status")),
+                provider=config.provider,
+                model=config.model,
+                reason=skip_reason,
+                human_review_required=True,
+            )
+            continue
 
-    snapshot = {
-        key: copy.deepcopy(target_rule.get(key))
-        for key in LLM_SHADOW_DETERMINISTIC_KEYS
-        if key in target_rule
-    }
-    try:
-        llm_verdict = classify_criterion(target_rule)
-    except Exception as exc:
-        llm_verdict = build_error_verdict(
-            rule_id=normalize_rule_id(target_rule.get("id")),
-            deterministic_status=normalize_status(target_rule.get("status")),
-            provider=config.provider,
-            model=config.model,
-            reason="LLM shadow classification failed.",
-            warnings=[str(exc)],
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-        )
+        snapshot = {
+            key: copy.deepcopy(target_rule.get(key))
+            for key in LLM_SHADOW_DETERMINISTIC_KEYS
+            if key in target_rule
+        }
+        try:
+            llm_verdict = classify_criterion(target_rule)
+        except Exception as exc:
+            llm_verdict = build_error_verdict(
+                rule_id=normalize_rule_id(target_rule.get("id")),
+                deterministic_status=normalize_status(target_rule.get("status")),
+                provider=config.provider,
+                model=config.model,
+                reason="LLM shadow classification failed.",
+                warnings=[str(exc)],
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
 
-    mutated = any(target_rule.get(key) != value for key, value in snapshot.items())
-    mutated = mutated or any(key not in snapshot and key in target_rule for key in LLM_SHADOW_DETERMINISTIC_KEYS)
-    for key in LLM_SHADOW_DETERMINISTIC_KEYS:
-        if key in snapshot:
-            target_rule[key] = snapshot[key]
-        else:
-            target_rule.pop(key, None)
-    if mutated and isinstance(llm_verdict, dict):
-        warnings = list(llm_verdict.get("warnings") or [])
-        warnings.append("Deterministic rule fields were restored after LLM shadow classification.")
-        llm_verdict["warnings"] = warnings
-    target_rule["llm_verdict"] = llm_verdict
+        mutated = any(target_rule.get(key) != value for key, value in snapshot.items())
+        mutated = mutated or any(key not in snapshot and key in target_rule for key in LLM_SHADOW_DETERMINISTIC_KEYS)
+        for key in LLM_SHADOW_DETERMINISTIC_KEYS:
+            if key in snapshot:
+                target_rule[key] = snapshot[key]
+            else:
+                target_rule.pop(key, None)
+        if mutated and isinstance(llm_verdict, dict):
+            warnings = list(llm_verdict.get("warnings") or [])
+            warnings.append("Deterministic rule fields were restored after LLM shadow classification.")
+            llm_verdict["warnings"] = warnings
+        target_rule["llm_verdict"] = llm_verdict
 
 
 def main() -> int:

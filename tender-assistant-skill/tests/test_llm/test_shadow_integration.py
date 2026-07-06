@@ -327,6 +327,252 @@ class ShadowIntegrationTests(unittest.TestCase):
         self.assertEqual(deterministic_before, _deterministic_rules(result))
         self.assertEqual(scenario_before, _scenario(result))
 
+    def test_disabled_mode_skips_purchase_type_goods_without_llm_verdict(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        result = _result(purchase_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(False)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertNotIn("llm_verdict", purchase_rule)
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+
+    def test_missing_purchase_type_goods_skips_without_adding_llm_verdict(self):
+        core_rule = _rule("subject_okpd2_oil")
+        other_rule = _rule("delivery_terms")
+        result = _result(core_rule, other_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertFalse(any("llm_verdict" in rule for rule in result["rules"]))
+
+    def test_weak_purchase_type_quantity_evidence_skips_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Количество: 100 литров. Позиция 1. Масло."}]
+        result = _result(purchase_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        llm_verdict = purchase_rule["llm_verdict"]
+        self.assertEqual("skipped", llm_verdict["invocation_status"])
+        self.assertEqual("unknown", llm_verdict["verdict"])
+        self.assertTrue(llm_verdict["human_review_required"])
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+
+    def test_empty_purchase_type_goods_evidence_skips_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = []
+        result = _result(purchase_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", purchase_rule["llm_verdict"]["invocation_status"])
+
+    def test_strong_purchase_type_goods_evidence_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+        self.assertEqual(llm_verdict, purchase_rule["llm_verdict"])
+
+    def test_strong_purchase_type_goods_word_form_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Товар был поставлен покупателю в согласованный срок."}]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+        self.assertEqual(llm_verdict, purchase_rule["llm_verdict"])
+
+    def test_strong_purchase_type_service_work_evidence_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Оказание услуг по замене масла в оборудовании."}]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+
+    def test_purchase_type_service_work_provision_evidence_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Предоставление услуг по техническому обслуживанию оборудования."}]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+
+    def test_conflict_purchase_type_goods_and_service_evidence_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [
+            {"text": "Поставка товара осуществляется партиями."},
+            {"text": "Также предусмотрен монтаж оборудования."},
+        ]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "unknown", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+
+    def test_purchase_type_goods_snippet_fallback_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"snippet": "Покупатель принимает товар после поставки."}]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+
+    def test_purchase_type_goods_block_text_fallback_allows_classifier(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"block": {"text": "Передача товара подтверждается накладной."}}]
+        result = _result(purchase_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(purchase_rule)
+
+    def test_purchase_type_goods_llm_exception_becomes_error_verdict(self):
+        purchase_rule = _rule("purchase_type_goods", status="unknown", risk="medium")
+        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        result = _result(purchase_rule)
+        deterministic_before = _deterministic_rules(result)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            side_effect=RuntimeError("fake failure"),
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual("error", purchase_rule["llm_verdict"]["invocation_status"])
+        self.assertEqual("RuntimeError", purchase_rule["llm_verdict"]["error_type"])
+
+    def test_purchase_type_goods_shadow_verdict_cannot_change_deterministic_fields(self):
+        purchase_rule = _rule("purchase_type_goods", status="pass", risk="low")
+        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        result = _result(purchase_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        def fake_classify(rule):
+            rule["status"] = "fail"
+            rule["risk"] = "high"
+            rule["human_review_required"] = True
+            rule["comment"] = "changed by fake llm"
+            rule["evidence"] = [{"text": "changed by fake llm"}]
+            return {
+                "invocation_status": "ok",
+                "verdict": "fail",
+                "conflicts_with_rule": True,
+                "warnings": [],
+            }
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            side_effect=fake_classify,
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+        self.assertEqual("fail", purchase_rule["llm_verdict"]["verdict"])
+        self.assertTrue(purchase_rule["llm_verdict"]["warnings"])
+
+    def test_purchase_type_goods_shadow_verdict_keeps_existing_scenario_result(self):
+        purchase_rule = _rule("purchase_type_goods")
+        purchase_rule["evidence"] = [{"text": "Поставка товара осуществляется по заявкам заказчика."}]
+        result = _result(purchase_rule)
+        result["scenario_result"] = {"scenario": "unchanged"}
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual({"scenario": "unchanged"}, result["scenario_result"])
+
 
 if __name__ == "__main__":
     unittest.main()
