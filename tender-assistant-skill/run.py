@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from output.docx_summary_writer import write_docx_summary
 from output.questions_writer import write_questions
 from output.summary_writer import write_summary
 from llm import classify_criterion, load_config_from_env
-from llm.schema import build_error_verdict, normalize_rule_id, normalize_status
+from llm.schema import build_error_verdict, build_skipped_verdict, normalize_rule_id, normalize_status
 
 
 REPO_ROOT = PROJECT_ROOT.parent
@@ -36,6 +37,23 @@ LLM_SHADOW_DETERMINISTIC_KEYS = (
     "evidence",
     "evidence_concerns",
     "explicit_dealer_indicator",
+)
+PROCUREMENT_METHOD_LLM_ALLOWED_PATTERNS = (
+    re.compile(r"\bэлектрон\w*\s+аукцион\w*\b"),
+    re.compile(r"\bаукцион\w*\s+в\s+электрон\w*\s+форм\w*\b"),
+    re.compile(r"\bпроведени\w*\s+электрон\w*\s+аукцион\w*\b"),
+    re.compile(r"\bэлектрон\w*\s+аукцион\w*\s+на\s+право\s+заключени\w*\s+договор\w*\b"),
+    re.compile(r"\bзапрос\s+предложени\w*\b"),
+    re.compile(r"\bзапрос\s+котировок\b"),
+    re.compile(r"\bкотировок\b"),
+    re.compile(r"\bкотировк\w*\b"),
+    re.compile(r"\bконкурс\w*\s+в\s+электрон\w*\s+форм\w*\b"),
+    re.compile(r"\bоткрыт\w*\s+конкурс\w*\b"),
+    re.compile(r"\bспособ\s+закупки\s*:\s*конкурс\w*\b"),
+    re.compile(r"\bспособ\s+определени\w*\s+поставщик\w*\s*:\s*конкурс\w*\b"),
+)
+PROCUREMENT_METHOD_AUCTION_ELECTRONIC_PROXIMITY_PATTERN = re.compile(
+    r"\bаукцион\w*\b[\s\S]{0,80}\bэлектрон\w*\b|\bэлектрон\w*\b[\s\S]{0,80}\bаукцион\w*\b"
 )
 
 
@@ -68,6 +86,33 @@ def _resolve_docx_template_path(template_arg: str | None) -> Path:
     )
 
 
+def _procurement_method_evidence_allows_llm(rule: dict) -> bool:
+    if normalize_rule_id(rule.get("id")) != LLM_SHADOW_RULE_ID:
+        return True
+
+    evidence = rule.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if text is None or not str(text).strip():
+            text = item.get("snippet")
+        if text is None or not str(text).strip():
+            block = item.get("block")
+            text = block.get("text", "") if isinstance(block, dict) else ""
+
+        text = str(text).lower()
+        if any(pattern.search(text) for pattern in PROCUREMENT_METHOD_LLM_ALLOWED_PATTERNS):
+            return True
+        if PROCUREMENT_METHOD_AUCTION_ELECTRONIC_PROXIMITY_PATTERN.search(text):
+            return True
+
+    return False
+
+
 def _apply_llm_shadow_verdict(result: dict) -> None:
     config = load_config_from_env()
     if not config.enabled:
@@ -82,6 +127,17 @@ def _apply_llm_shadow_verdict(result: dict) -> None:
         None,
     )
     if target_rule is None:
+        return
+
+    if not _procurement_method_evidence_allows_llm(target_rule):
+        target_rule["llm_verdict"] = build_skipped_verdict(
+            rule_id=normalize_rule_id(target_rule.get("id")),
+            deterministic_status=normalize_status(target_rule.get("status")),
+            provider=config.provider,
+            model=config.model,
+            reason="Evidence does not contain explicit procurement method phrase.",
+            human_review_required=True,
+        )
         return
 
     snapshot = {

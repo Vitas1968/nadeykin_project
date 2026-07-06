@@ -70,6 +70,7 @@ class ShadowIntegrationTests(unittest.TestCase):
     def test_enabled_mode_calls_llm_only_for_procurement_method(self):
         core_rule = _rule("subject_okpd2_oil")
         procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
         other_rule = _rule("delivery_terms")
         result = _result(core_rule, procurement_rule, other_rule)
         llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
@@ -86,9 +87,177 @@ class ShadowIntegrationTests(unittest.TestCase):
         self.assertNotIn("llm_verdict", core_rule)
         self.assertNotIn("llm_verdict", other_rule)
 
+    def test_weak_procurement_evidence_skips_classifier_with_skipped_verdict(self):
+        core_rule = _rule("subject_okpd2_oil")
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [
+            {"text": "Заявка оформляется в виде электронного документа, подписанного КЭП."}
+        ]
+        result = _result(core_rule, procurement_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        llm_verdict = procurement_rule["llm_verdict"]
+        self.assertEqual("skipped", llm_verdict["invocation_status"])
+        self.assertEqual("unknown", llm_verdict["verdict"])
+        self.assertEqual("low", llm_verdict["confidence"])
+        self.assertTrue(llm_verdict["human_review_required"])
+        self.assertEqual([], llm_verdict["supporting_evidence_ids"])
+        self.assertFalse(llm_verdict["conflicts_with_rule"])
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+
+    def test_electronic_platform_weak_evidence_skips_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [
+            {"text": "Заявка подается через оператора электронной площадки в форме электронного документа."}
+        ]
+        result = _result(procurement_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", procurement_rule["llm_verdict"]["invocation_status"])
+
+    def test_explicit_electronic_auction_evidence_allows_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+
+    def test_explicit_request_for_proposals_evidence_allows_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: запрос предложений в электронной форме."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+
+    def test_explicit_quotation_genitive_plural_evidence_allows_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Проведение котировок осуществляется в электронной форме."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+
+    def test_snippet_only_explicit_evidence_allows_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"snippet": "Способ определения поставщика: электронный аукцион."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+
+    def test_block_text_only_explicit_evidence_allows_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"block": {"text": "Способ определения поставщика: электронный аукцион."}}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+
+    def test_empty_procurement_evidence_skips_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = []
+        result = _result(procurement_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", procurement_rule["llm_verdict"]["invocation_status"])
+
+    def test_auction_word_form_in_electronic_form_allows_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Закупка проводится путём аукциона в электронной форме."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+
+    def test_ambiguous_electronic_platform_without_auction_skips_classifier(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [
+            {"text": "Подача заявок осуществляется через электронную площадку в форме, установленной для конкурентных процедур."}
+        ]
+        result = _result(procurement_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", procurement_rule["llm_verdict"]["invocation_status"])
+
     def test_shadow_verdict_cannot_change_deterministic_fields_or_scenario(self):
         core_rule = _rule("subject_okpd2_oil")
         procurement_rule = _rule("procurement_method", status="pass", risk="low")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
         result = _result(core_rule, procurement_rule)
         deterministic_before = _deterministic_rules(result)
         scenario_before = _scenario(result)
@@ -122,6 +291,7 @@ class ShadowIntegrationTests(unittest.TestCase):
     def test_llm_exception_becomes_error_verdict_without_changing_deterministic_fields(self):
         core_rule = _rule("subject_okpd2_oil")
         procurement_rule = _rule("procurement_method", status="unknown", risk="medium")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
         result = _result(core_rule, procurement_rule)
         deterministic_before = _deterministic_rules(result)
         scenario_before = _scenario(result)
