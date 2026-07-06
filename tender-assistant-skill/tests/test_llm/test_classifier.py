@@ -275,6 +275,86 @@ class ClassifierTests(unittest.TestCase):
         self.assertIn("Закупка только для субъектов МСП.", prompt)
         self.assertIn("Участниками закупки могут быть только СМП.", prompt)
 
+    def test_security_requirement_prompt_contains_bid_security_instruction(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertIn("обеспечение заявки", prompt)
+
+    def test_security_requirement_prompt_contains_contract_security_instruction(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertIn("обеспечение исполнения контракта", prompt)
+
+    def test_security_requirement_prompt_distinguishes_instruments_without_security_type(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertIn("банковская гарантия", prompt)
+        self.assertIn("без явного вида обеспечения не подтверждают критерий", prompt)
+
+    def test_security_requirement_prompt_distinguishes_warranty_obligations(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertIn("обеспечение гарантийных обязательств", prompt)
+        self.assertIn("не равно обеспечению заявки", prompt)
+
+    def test_security_requirement_prompt_contains_negative_phrases(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertIn("не требуется", prompt)
+        self.assertIn("не установлено", prompt)
+        self.assertIn("не предусмотрено", prompt)
+
+    def test_security_requirement_prompt_excludes_procurement_only_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertNotIn("электронный аукцион", prompt)
+
+    def test_security_requirement_prompt_excludes_purchase_type_goods_only_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertNotIn("поставка товара", prompt)
+        self.assertNotIn("оказание услуг", prompt)
+        self.assertNotIn("выполнение работ", prompt)
+
+    def test_security_requirement_prompt_excludes_msp_only_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению.",
+        )
+
+        self.assertNotIn("только для субъектов МСП", prompt)
+
+    def test_security_requirement_prompt_preserves_russian_utf8_text(self):
+        prompt = _rendered_prompt_for_rule(
+            "security_requirement",
+            "Требования к обеспечению заявки.",
+            evidence=[{"text": "Обеспечение заявки не требуется."}],
+        )
+
+        self.assertIn("Требования к обеспечению заявки.", prompt)
+        self.assertIn("Обеспечение заявки не требуется.", prompt)
+
     def test_other_rule_id_gets_empty_rule_instructions(self):
         prompt = _rendered_prompt_for_rule(
             "delivery_deadline",

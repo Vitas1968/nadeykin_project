@@ -28,10 +28,12 @@ DEFAULT_DOCX_TEMPLATE_RELATIVE = "sources_info/Шаблон сводки по т
 LLM_SHADOW_RULE_ID = "procurement_method"
 PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID = "purchase_type_goods"
 MSP_RESTRICTION_LLM_SHADOW_RULE_ID = "msp_restriction"
+SECURITY_REQUIREMENT_LLM_SHADOW_RULE_ID = "security_requirement"
 LLM_SHADOW_RULE_IDS = (
     LLM_SHADOW_RULE_ID,
     PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID,
     MSP_RESTRICTION_LLM_SHADOW_RULE_ID,
+    SECURITY_REQUIREMENT_LLM_SHADOW_RULE_ID,
 )
 LLM_SHADOW_DETERMINISTIC_KEYS = (
     "id",
@@ -110,6 +112,49 @@ MSP_RESTRICTION_ABSENCE_MARKERS = (
     "участниками могут быть любые лица",
 )
 MSP_RESTRICTION_PROXIMITY_WINDOW_CHARS = 50
+SECURITY_REQUIREMENT_SKIP_REASON = (
+    "Evidence does not contain explicit security requirement or explicit absence of security requirement."
+)
+SECURITY_REQUIREMENT_TYPE_MARKERS = (
+    "обеспечение заявки",
+    "обеспечения заявки",
+    "обеспечение участия",
+    "обеспечения участия",
+    "обеспечение исполнения контракта",
+    "обеспечения исполнения контракта",
+    "обеспечение исполнения договора",
+    "обеспечения исполнения договора",
+    "обеспечение исполнения обязательств",
+    "обеспечения исполнения обязательств",
+    "обеспечение договора",
+    "обеспечения договора",
+)
+SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS = (
+    "требуется",
+    "установлено",
+    "предусмотрено",
+    "размер",
+    "составляет",
+    "%",
+    "руб",
+    "предоставляется",
+    "вносится",
+)
+SECURITY_REQUIREMENT_NEGATIVE_CONTEXT_MARKERS = (
+    "не требуется",
+    "не установлено",
+    "не предусмотрено",
+    "отсутствует",
+    "не применяется",
+)
+SECURITY_REQUIREMENT_INSTRUMENT_MARKERS = (
+    "независимая гарантия",
+    "банковская гарантия",
+    "денежные средства",
+    "спецсчет",
+    "специальный счет",
+    "реквизиты",
+)
 
 
 def _resolve_docx_template_path(template_arg: str | None) -> Path:
@@ -198,6 +243,13 @@ def _any_markers_are_near(text: str, markers_a: tuple[str, ...], markers_b: tupl
     )
 
 
+def _text_without_markers(text: str, markers: tuple[str, ...]) -> str:
+    cleaned = text
+    for marker in markers:
+        cleaned = cleaned.replace(marker, " " * len(marker))
+    return cleaned
+
+
 def _msp_restriction_item_guardrail_verdict(item: dict) -> str | None:
     text = _normalize_guardrail_text(_evidence_item_text(item))
     if not text:
@@ -232,6 +284,62 @@ def _aggregate_msp_restriction_guardrail_verdict(evidence: list) -> str | None:
             continue
 
         item_verdict = _msp_restriction_item_guardrail_verdict(item)
+        if item_verdict == "conflict":
+            return "conflict"
+        if item_verdict == "positive":
+            has_positive = True
+        elif item_verdict == "negative":
+            has_negative = True
+
+    if has_positive and has_negative:
+        return "conflict"
+    if has_positive:
+        return "positive"
+    if has_negative:
+        return "negative"
+    return None
+
+
+def _security_requirement_item_guardrail_verdict(item: dict) -> str | None:
+    text = _normalize_guardrail_text(_evidence_item_text(item))
+    if not text:
+        return None
+
+    has_negative_context = _any_markers_are_near(
+        text,
+        SECURITY_REQUIREMENT_TYPE_MARKERS,
+        SECURITY_REQUIREMENT_NEGATIVE_CONTEXT_MARKERS,
+    )
+    text_without_negative_context = _text_without_markers(text, SECURITY_REQUIREMENT_NEGATIVE_CONTEXT_MARKERS)
+    has_positive_context = _any_markers_are_near(
+        text_without_negative_context,
+        SECURITY_REQUIREMENT_TYPE_MARKERS,
+        SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS,
+    )
+    has_instrument_context = _any_markers_are_near(
+        text,
+        SECURITY_REQUIREMENT_TYPE_MARKERS,
+        SECURITY_REQUIREMENT_INSTRUMENT_MARKERS,
+    )
+
+    if has_positive_context and has_negative_context:
+        return "conflict"
+    if has_positive_context or has_instrument_context:
+        return "positive"
+    if has_negative_context:
+        return "negative"
+    return None
+
+
+def _aggregate_security_requirement_guardrail_verdict(evidence: list) -> str | None:
+    has_positive = False
+    has_negative = False
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+
+        item_verdict = _security_requirement_item_guardrail_verdict(item)
         if item_verdict == "conflict":
             return "conflict"
         if item_verdict == "positive":
@@ -303,6 +411,17 @@ def _msp_restriction_evidence_allows_llm(rule: dict) -> bool:
     return _aggregate_msp_restriction_guardrail_verdict(evidence) is not None
 
 
+def guardrail_security_requirement(rule: dict) -> bool:
+    if normalize_rule_id(rule.get("id")) != SECURITY_REQUIREMENT_LLM_SHADOW_RULE_ID:
+        return True
+
+    evidence = rule.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+
+    return _aggregate_security_requirement_guardrail_verdict(evidence) is not None
+
+
 def _llm_shadow_skip_reason(rule: dict) -> str | None:
     rule_id = normalize_rule_id(rule.get("id"))
     if rule_id == LLM_SHADOW_RULE_ID and not _procurement_method_evidence_allows_llm(rule):
@@ -311,6 +430,8 @@ def _llm_shadow_skip_reason(rule: dict) -> str | None:
         return "Evidence does not contain explicit goods supply or service/work phrase."
     if rule_id == MSP_RESTRICTION_LLM_SHADOW_RULE_ID and not _msp_restriction_evidence_allows_llm(rule):
         return MSP_RESTRICTION_SKIP_REASON
+    if rule_id == SECURITY_REQUIREMENT_LLM_SHADOW_RULE_ID and not guardrail_security_requirement(rule):
+        return SECURITY_REQUIREMENT_SKIP_REASON
     return None
 
 

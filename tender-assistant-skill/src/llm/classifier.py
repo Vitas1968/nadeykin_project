@@ -10,6 +10,7 @@ _UNAVAILABLE_ERROR_TYPES = {"http_error", "url_error", "timeout", "ConnectionRef
 _PROCUREMENT_METHOD_RULE_ID = "procurement_method"
 _PURCHASE_TYPE_GOODS_RULE_ID = "purchase_type_goods"
 _MSP_RESTRICTION_RULE_ID = "msp_restriction"
+_SECURITY_REQUIREMENT_RULE_ID = "security_requirement"
 
 
 class ChatClient(Protocol):
@@ -73,6 +74,16 @@ def _rule_instructions_for_rule_id(rule_id: str) -> str:
 - Декларация о принадлежности к субъектам МСП или реестр субъектов МСП без restriction context не подтверждают ограничение участия.
 - Формулировки "не установлено", "не предусмотрено", "отсутствует", "участниками могут быть любые лица", "не является закупкой у СМП" или "не является закупкой у МСП" указывают на отсутствие restriction.
 - Если positive-маркеры ограничения и negative-маркеры отсутствия restriction конфликтуют, верни `verdict="conflict"`.
+- Если evidence недостаточно для уверенной классификации, верни `verdict="unknown"`, `confidence="low"`, `human_review_required=true`, `supporting_evidence_ids=[]`."""
+
+    if rule_id == _SECURITY_REQUIREMENT_RULE_ID:
+        return """- Для `security_requirement` классифицируй только требования об обеспечении заявки, обеспечении участия, обеспечении исполнения контракта или обеспечении исполнения договора.
+- Базовые фразы критерия: "обеспечение заявки", "обеспечение исполнения контракта".
+- `pass` допустим, если evidence явно показывает, что такое обеспечение требуется, установлено, предусмотрено, имеет размер, предоставляется или вносится.
+- "банковская гарантия", "независимая гарантия", "денежные средства", "спецсчет" и "реквизиты" без явного вида обеспечения не подтверждают критерий.
+- "обеспечение гарантийных обязательств" не равно обеспечению заявки или обеспечению исполнения контракта/договора.
+- Формулировки "не требуется", "не установлено", "не предусмотрено", "отсутствует" и "не применяется" указывают на отсутствие требования.
+- Если positive-маркеры требования и negative-маркеры отсутствия требования конфликтуют, верни `verdict="conflict"`.
 - Если evidence недостаточно для уверенной классификации, верни `verdict="unknown"`, `confidence="low"`, `human_review_required=true`, `supporting_evidence_ids=[]`."""
 
     return ""

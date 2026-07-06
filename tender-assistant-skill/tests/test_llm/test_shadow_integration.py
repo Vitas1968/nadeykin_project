@@ -48,6 +48,42 @@ def _scenario(result):
 
 
 class ShadowIntegrationTests(unittest.TestCase):
+    def _assert_security_evidence_allows_classifier(self, evidence):
+        security_rule = _rule("security_requirement")
+        security_rule["evidence"] = evidence if isinstance(evidence, list) else [{"text": evidence}]
+        result = _result(security_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(security_rule)
+        self.assertEqual(llm_verdict, security_rule["llm_verdict"])
+
+    def _assert_security_evidence_skips_classifier(self, text):
+        security_rule = _rule("security_requirement")
+        security_rule["evidence"] = [{"text": text}]
+        result = _result(security_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        llm_verdict = security_rule["llm_verdict"]
+        self.assertEqual("skipped", llm_verdict["invocation_status"])
+        self.assertEqual("unknown", llm_verdict["verdict"])
+        self.assertEqual("low", llm_verdict["confidence"])
+        self.assertTrue(llm_verdict["human_review_required"])
+        self.assertEqual(pipeline_run.SECURITY_REQUIREMENT_SKIP_REASON, llm_verdict["reason"])
+
     def test_disabled_mode_skips_without_llm_verdict_or_classifier_call(self):
         core_rule = _rule("subject_okpd2_oil")
         procurement_rule = _rule("procurement_method")
@@ -800,6 +836,105 @@ class ShadowIntegrationTests(unittest.TestCase):
         msp_rule = _rule("msp_restriction")
         msp_rule["evidence"] = [{"text": "Участниками закупки могут быть только СМП."}]
         result = _result(msp_rule)
+        result["scenario_result"] = {"scenario": "unchanged"}
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual({"scenario": "unchanged"}, result["scenario_result"])
+
+    def test_strong_security_requirement_positive_evidence_allows_classifier(self):
+        phrases = (
+            "обеспечение заявки требуется",
+            "размер обеспечения заявки составляет 1%",
+            "размер обеспечения исполнения контракта составляет 5%",
+            "обеспечение исполнения контракта предоставляется в форме независимой гарантии",
+            "обеспечение исполнения договора составляет 5%",
+        )
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self._assert_security_evidence_allows_classifier(phrase)
+
+    def test_security_requirement_negative_evidence_allows_classifier(self):
+        phrases = (
+            "обеспечение заявки не требуется",
+            "обеспечение исполнения контракта не требуется",
+            "обеспечение исполнения обязательств по договору не предусмотрено",
+        )
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self._assert_security_evidence_allows_classifier(phrase)
+
+    def test_weak_security_requirement_evidence_skips_classifier(self):
+        phrases = (
+            "банковская гарантия",
+            "денежные средства",
+            "размер обеспечения",
+            "антидемпинговые меры",
+            "обеспечение гарантийных обязательств",
+            "банковская гарантия предоставляется в размере 500000 руб.",
+        )
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self._assert_security_evidence_skips_classifier(phrase)
+
+    def test_mixed_security_requirement_positive_and_negative_in_one_item_allows_classifier(self):
+        self._assert_security_evidence_allows_classifier(
+            "обеспечение заявки требуется; обеспечение исполнения контракта не требуется"
+        )
+
+    def test_security_requirement_positive_and_negative_in_different_items_allows_classifier(self):
+        self._assert_security_evidence_allows_classifier(
+            [
+                {"text": "обеспечение заявки требуется"},
+                {"text": "обеспечение исполнения контракта не требуется"},
+            ]
+        )
+
+    def test_security_requirement_shadow_verdict_cannot_change_deterministic_fields(self):
+        security_rule = _rule("security_requirement", status="pass", risk="low")
+        security_rule["evidence"] = [{"text": "обеспечение заявки требуется"}]
+        result = _result(security_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        def fake_classify(rule):
+            rule["status"] = "fail"
+            rule["risk"] = "high"
+            rule["human_review_required"] = True
+            rule["comment"] = "changed by fake llm"
+            rule["evidence"] = [{"text": "changed by fake llm"}]
+            return {
+                "invocation_status": "ok",
+                "verdict": "fail",
+                "conflicts_with_rule": True,
+                "warnings": [],
+            }
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            side_effect=fake_classify,
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+        self.assertEqual("fail", security_rule["llm_verdict"]["verdict"])
+        self.assertTrue(security_rule["llm_verdict"]["warnings"])
+
+    def test_security_requirement_shadow_verdict_keeps_existing_scenario_result(self):
+        security_rule = _rule("security_requirement")
+        security_rule["evidence"] = [{"text": "обеспечение заявки требуется"}]
+        result = _result(security_rule)
         result["scenario_result"] = {"scenario": "unchanged"}
         llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
 
