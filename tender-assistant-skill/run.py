@@ -503,8 +503,9 @@ def _apply_llm_shadow_verdict(result: dict) -> None:
                 "human_review_required": True,
             }
             # This is an intentional coverage/cost trade-off: for explicit goods-only evidence,
-            # LLM shadow is skipped as redundant to reduce latency and cost. Ambiguous,
-            # service/work, and conflict cases still call LLM.
+            # LLM shadow is skipped as redundant to reduce latency and cost. Service/work and
+            # goods+service conflict cases still call LLM. Weak or ambiguous evidence without
+            # explicit goods/service-work phrases is skipped.
             if (
                 normalize_rule_id(target_rule.get("id")) == PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID
                 and skip_reason == PURCHASE_TYPE_GOODS_REDUNDANT_SKIP_REASON
