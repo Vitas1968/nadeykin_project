@@ -27,7 +27,12 @@ REPO_ROOT = PROJECT_ROOT.parent
 DEFAULT_DOCX_TEMPLATE_RELATIVE = "sources_info/Шаблон сводки по тендеру v2.docx"
 LLM_SHADOW_RULE_ID = "procurement_method"
 PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID = "purchase_type_goods"
-LLM_SHADOW_RULE_IDS = (LLM_SHADOW_RULE_ID, PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID)
+MSP_RESTRICTION_LLM_SHADOW_RULE_ID = "msp_restriction"
+LLM_SHADOW_RULE_IDS = (
+    LLM_SHADOW_RULE_ID,
+    PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID,
+    MSP_RESTRICTION_LLM_SHADOW_RULE_ID,
+)
 LLM_SHADOW_DETERMINISTIC_KEYS = (
     "id",
     "criterion",
@@ -77,6 +82,34 @@ PURCHASE_TYPE_SERVICE_WORK_LLM_ALLOWED_PATTERNS = (
     re.compile(r"\bдиагностик\w*\s+оборудовани\w*\b"),
     re.compile(r"\bпроведени\w*\s+диагностик\w*\b"),
 )
+MSP_RESTRICTION_SKIP_REASON = (
+    "Evidence does not contain explicit SME-only restriction or explicit absence of SME restriction."
+)
+MSP_RESTRICTION_MARKERS = (
+    "мсп",
+    "смп",
+    "малого и среднего предпринимательства",
+    "малого предпринимательства",
+    "сонко",
+    "соно",
+)
+MSP_RESTRICTION_POSITIVE_CONTEXT_MARKERS = (
+    "только",
+    "среди",
+    "ограничение участия установлено",
+    "ограничение установлено",
+)
+MSP_RESTRICTION_NEGATIVE_CONTEXT_MARKERS = (
+    "не установлено",
+    "не предусмотрено",
+    "отсутствует",
+)
+MSP_RESTRICTION_ABSENCE_MARKERS = (
+    "не является закупкой у смп",
+    "не является закупкой у мсп",
+    "участниками могут быть любые лица",
+)
+MSP_RESTRICTION_PROXIMITY_WINDOW_CHARS = 50
 
 
 def _resolve_docx_template_path(template_arg: str | None) -> Path:
@@ -116,6 +149,103 @@ def _evidence_item_text(item: dict) -> str:
         block = item.get("block")
         text = block.get("text", "") if isinstance(block, dict) else ""
     return str(text)
+
+
+def _normalize_guardrail_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text).lower()).strip()
+
+
+def _contains_any_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _marker_positions(text: str, marker: str) -> list[int]:
+    positions: list[int] = []
+    start = 0
+    while True:
+        position = text.find(marker, start)
+        if position < 0:
+            return positions
+        positions.append(position)
+        start = position + 1
+
+
+def _markers_are_near(text: str, marker_a: str, marker_b: str) -> bool:
+    if marker_a not in text or marker_b not in text:
+        return False
+
+    has_sentence_separator = any(separator in text for separator in ".!?;")
+    if has_sentence_separator:
+        sentences = [sentence.strip() for sentence in re.split(r"[.!?;]+", text) if sentence.strip()]
+        if any(marker_a in sentence and marker_b in sentence for sentence in sentences):
+            return True
+        return False
+
+    positions_a = _marker_positions(text, marker_a)
+    positions_b = _marker_positions(text, marker_b)
+    return any(
+        abs(position_a - position_b) <= MSP_RESTRICTION_PROXIMITY_WINDOW_CHARS
+        for position_a in positions_a
+        for position_b in positions_b
+    )
+
+
+def _any_markers_are_near(text: str, markers_a: tuple[str, ...], markers_b: tuple[str, ...]) -> bool:
+    return any(
+        _markers_are_near(text, marker_a, marker_b)
+        for marker_a in markers_a
+        for marker_b in markers_b
+    )
+
+
+def _msp_restriction_item_guardrail_verdict(item: dict) -> str | None:
+    text = _normalize_guardrail_text(_evidence_item_text(item))
+    if not text:
+        return None
+
+    has_positive_context = _any_markers_are_near(
+        text,
+        MSP_RESTRICTION_MARKERS,
+        MSP_RESTRICTION_POSITIVE_CONTEXT_MARKERS,
+    )
+    has_absence_context = _contains_any_marker(text, MSP_RESTRICTION_ABSENCE_MARKERS) or _any_markers_are_near(
+        text,
+        ("ограничение участия",),
+        MSP_RESTRICTION_NEGATIVE_CONTEXT_MARKERS,
+    )
+
+    if has_positive_context and has_absence_context:
+        return "conflict"
+    if has_positive_context:
+        return "positive"
+    if has_absence_context:
+        return "negative"
+    return None
+
+
+def _aggregate_msp_restriction_guardrail_verdict(evidence: list) -> str | None:
+    has_positive = False
+    has_negative = False
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+
+        item_verdict = _msp_restriction_item_guardrail_verdict(item)
+        if item_verdict == "conflict":
+            return "conflict"
+        if item_verdict == "positive":
+            has_positive = True
+        elif item_verdict == "negative":
+            has_negative = True
+
+    if has_positive and has_negative:
+        return "conflict"
+    if has_positive:
+        return "positive"
+    if has_negative:
+        return "negative"
+    return None
 
 
 # Non-target rules are allowed if guardrail helpers are reused directly.
@@ -161,12 +291,26 @@ def _purchase_type_goods_evidence_allows_llm(rule: dict) -> bool:
     return False
 
 
+def _msp_restriction_evidence_allows_llm(rule: dict) -> bool:
+    if normalize_rule_id(rule.get("id")) != MSP_RESTRICTION_LLM_SHADOW_RULE_ID:
+        return True
+
+    evidence = rule.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+
+    # Evidence items do not expose a reliable title/body discriminator, so title-only SME header heuristics are not implemented.
+    return _aggregate_msp_restriction_guardrail_verdict(evidence) is not None
+
+
 def _llm_shadow_skip_reason(rule: dict) -> str | None:
     rule_id = normalize_rule_id(rule.get("id"))
     if rule_id == LLM_SHADOW_RULE_ID and not _procurement_method_evidence_allows_llm(rule):
         return "Evidence does not contain explicit procurement method phrase."
     if rule_id == PURCHASE_TYPE_GOODS_LLM_SHADOW_RULE_ID and not _purchase_type_goods_evidence_allows_llm(rule):
         return "Evidence does not contain explicit goods supply or service/work phrase."
+    if rule_id == MSP_RESTRICTION_LLM_SHADOW_RULE_ID and not _msp_restriction_evidence_allows_llm(rule):
+        return MSP_RESTRICTION_SKIP_REASON
     return None
 
 

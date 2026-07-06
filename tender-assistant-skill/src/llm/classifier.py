@@ -9,6 +9,7 @@ from .prompt_loader import PromptLoadError, render_classify_criterion_prompt
 _UNAVAILABLE_ERROR_TYPES = {"http_error", "url_error", "timeout", "ConnectionRefusedError"}
 _PROCUREMENT_METHOD_RULE_ID = "procurement_method"
 _PURCHASE_TYPE_GOODS_RULE_ID = "purchase_type_goods"
+_MSP_RESTRICTION_RULE_ID = "msp_restriction"
 
 
 class ChatClient(Protocol):
@@ -63,6 +64,16 @@ def _rule_instructions_for_rule_id(rule_id: str) -> str:
 - Верни `verdict="fail"`, если evidence явно показывает оказание услуг или выполнение работ как основной предмет закупки.
 - Верни `verdict="unknown"` и `confidence="low"`, если evidence содержит только количество, единицы измерения (литры, кг, штуки и т.п.) или позицию без явного указания на передачу товара.
 - Для смешанных случаев товар плюс услуга или работа верни `verdict="conflict"` либо `verdict="unknown"`, если нельзя уверенно определить основной предмет закупки."""
+
+    if rule_id == _MSP_RESTRICTION_RULE_ID:
+        return """- Для `msp_restriction` классифицируй только ограничение участия для МСП, СМП, СОНКО или СОНО.
+- `pass` допустим, если evidence явно показывает, что закупка только для субъектов МСП/СМП/СОНКО/СОНО.
+- Формулировки "только для субъектов", "участниками могут быть только", "среди субъектов", "ограничение участия установлено" могут подтверждать ограничение.
+- "Преимущество" субъектам МСП не равно "только для МСП" и само по себе не подтверждает ограничение участия.
+- Декларация о принадлежности к субъектам МСП или реестр субъектов МСП без restriction context не подтверждают ограничение участия.
+- Формулировки "не установлено", "не предусмотрено", "отсутствует", "участниками могут быть любые лица", "не является закупкой у СМП" или "не является закупкой у МСП" указывают на отсутствие restriction.
+- Если positive-маркеры ограничения и negative-маркеры отсутствия restriction конфликтуют, верни `verdict="conflict"`.
+- Если evidence недостаточно для уверенной классификации, верни `verdict="unknown"`, `confidence="low"`, `human_review_required=true`, `supporting_evidence_ids=[]`."""
 
     return ""
 

@@ -573,6 +573,245 @@ class ShadowIntegrationTests(unittest.TestCase):
 
         self.assertEqual({"scenario": "unchanged"}, result["scenario_result"])
 
+    def test_strong_msp_only_restriction_allows_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Закупка только для субъектов малого и среднего предпринимательства."}]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+        self.assertEqual(llm_verdict, msp_rule["llm_verdict"])
+
+    def test_strong_msp_only_smp_participants_allows_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Участниками закупки могут быть только СМП."}]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+
+    def test_strong_msp_among_small_business_allows_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Закупка проводится среди субъектов малого предпринимательства."}]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+
+    def test_negative_msp_not_provided_allows_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Ограничение участия субъектов МСП не предусмотрено."}]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+
+    def test_negative_not_smp_purchase_allows_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Закупка не является закупкой у СМП."}]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+
+    def test_negative_any_participants_allowed_allows_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Участниками могут быть любые лица."}]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+
+    def test_weak_msp_preference_skips_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Преимущество субъектам МСП предоставляется в установленном порядке."}]
+        result = _result(msp_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", msp_rule["llm_verdict"]["invocation_status"])
+        self.assertEqual("unknown", msp_rule["llm_verdict"]["verdict"])
+        self.assertTrue(msp_rule["llm_verdict"]["human_review_required"])
+        self.assertEqual(pipeline_run.MSP_RESTRICTION_SKIP_REASON, msp_rule["llm_verdict"]["reason"])
+
+    def test_weak_msp_marker_skips_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Субъекты МСП указывают сведения в составе заявки."}]
+        result = _result(msp_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", msp_rule["llm_verdict"]["invocation_status"])
+
+    def test_weak_msp_declaration_skips_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Декларация о принадлежности к субъектам МСП подается участником."}]
+        result = _result(msp_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", msp_rule["llm_verdict"]["invocation_status"])
+
+    def test_dealer_partner_without_sme_context_skips_classifier(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Официальный дилер и партнер производителя предоставляет документы."}]
+        result = _result(msp_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        self.assertEqual("skipped", msp_rule["llm_verdict"]["invocation_status"])
+
+    def test_mixed_msp_positive_and_negative_in_one_item_allows_conflict_classifier_verdict(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [
+            {"text": "Участниками закупки могут быть только СМП; ограничение участия не предусмотрено."}
+        ]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "conflict", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+        self.assertEqual("conflict", msp_rule["llm_verdict"]["verdict"])
+
+    def test_msp_positive_and_negative_in_different_items_allows_conflict_classifier_verdict(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [
+            {"text": "Участниками закупки могут быть только СМП."},
+            {"text": "Ограничение участия не установлено."},
+        ]
+        result = _result(msp_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "conflict", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(msp_rule)
+        self.assertEqual("conflict", msp_rule["llm_verdict"]["verdict"])
+
+    def test_msp_shadow_verdict_cannot_change_deterministic_fields(self):
+        msp_rule = _rule("msp_restriction", status="pass", risk="low")
+        msp_rule["evidence"] = [{"text": "Участниками закупки могут быть только СМП."}]
+        result = _result(msp_rule)
+        deterministic_before = _deterministic_rules(result)
+        scenario_before = _scenario(result)
+
+        def fake_classify(rule):
+            rule["status"] = "fail"
+            rule["risk"] = "high"
+            rule["human_review_required"] = True
+            rule["comment"] = "changed by fake llm"
+            rule["evidence"] = [{"text": "changed by fake llm"}]
+            return {
+                "invocation_status": "ok",
+                "verdict": "fail",
+                "conflicts_with_rule": True,
+                "warnings": [],
+            }
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            side_effect=fake_classify,
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+        self.assertEqual(scenario_before, _scenario(result))
+        self.assertEqual("fail", msp_rule["llm_verdict"]["verdict"])
+        self.assertTrue(msp_rule["llm_verdict"]["warnings"])
+
+    def test_msp_shadow_verdict_keeps_existing_scenario_result(self):
+        msp_rule = _rule("msp_restriction")
+        msp_rule["evidence"] = [{"text": "Участниками закупки могут быть только СМП."}]
+        result = _result(msp_rule)
+        result["scenario_result"] = {"scenario": "unchanged"}
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ):
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        self.assertEqual({"scenario": "unchanged"}, result["scenario_result"])
+
 
 if __name__ == "__main__":
     unittest.main()

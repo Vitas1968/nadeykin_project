@@ -219,6 +219,62 @@ class ClassifierTests(unittest.TestCase):
         self.assertNotIn("запрос предложений", prompt)
         self.assertNotIn("котировка", prompt)
 
+    def test_msp_restriction_prompt_contains_sme_only_instruction(self):
+        prompt = _rendered_prompt_for_rule(
+            "msp_restriction",
+            "Закупка только для субъектов МСП.",
+        )
+
+        self.assertIn("только для субъектов", prompt)
+
+    def test_msp_restriction_prompt_distinguishes_preference_from_only(self):
+        prompt = _rendered_prompt_for_rule(
+            "msp_restriction",
+            "Закупка только для субъектов МСП.",
+        )
+
+        self.assertIn("Преимущество", prompt)
+        self.assertIn("не равно", prompt)
+        self.assertIn("только для МСП", prompt)
+
+    def test_msp_restriction_prompt_contains_negative_phrases(self):
+        prompt = _rendered_prompt_for_rule(
+            "msp_restriction",
+            "Закупка только для субъектов МСП.",
+        )
+
+        self.assertIn("не предусмотрено", prompt)
+        self.assertIn("не установлено", prompt)
+        self.assertIn("любые лица", prompt)
+
+    def test_msp_restriction_prompt_excludes_procurement_only_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "msp_restriction",
+            "Закупка только для субъектов МСП.",
+        )
+
+        self.assertNotIn("электронный аукцион", prompt)
+
+    def test_msp_restriction_prompt_excludes_purchase_type_goods_only_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "msp_restriction",
+            "Закупка только для субъектов МСП.",
+        )
+
+        self.assertNotIn("поставка товара", prompt)
+        self.assertNotIn("оказание услуг", prompt)
+        self.assertNotIn("выполнение работ", prompt)
+
+    def test_msp_restriction_prompt_preserves_russian_utf8_text(self):
+        prompt = _rendered_prompt_for_rule(
+            "msp_restriction",
+            "Закупка только для субъектов МСП.",
+            evidence=[{"text": "Участниками закупки могут быть только СМП."}],
+        )
+
+        self.assertIn("Закупка только для субъектов МСП.", prompt)
+        self.assertIn("Участниками закупки могут быть только СМП.", prompt)
+
     def test_other_rule_id_gets_empty_rule_instructions(self):
         prompt = _rendered_prompt_for_rule(
             "delivery_deadline",
