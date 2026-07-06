@@ -38,6 +38,25 @@ def _env_bool(value: str | None) -> bool:
     return str(value).strip().lower() == "true"
 
 
+def _env_timeout_seconds(value: str | None) -> int:
+    if value is None:
+        return DEFAULT_TIMEOUT_SECONDS
+
+    stripped = value.strip()
+    if not stripped:
+        return DEFAULT_TIMEOUT_SECONDS
+
+    try:
+        # int() intentionally accepts values like "+30" and "030" as 30.
+        timeout_seconds = int(stripped)
+    except ValueError:
+        return DEFAULT_TIMEOUT_SECONDS
+
+    if timeout_seconds <= 0:
+        return DEFAULT_TIMEOUT_SECONDS
+    return timeout_seconds
+
+
 def load_config_from_env() -> LLMClientConfig:
     return LLMClientConfig(
         enabled=_env_bool(os.environ.get("TENDER_LLM_ENABLED")),
@@ -45,6 +64,7 @@ def load_config_from_env() -> LLMClientConfig:
         base_url=os.environ.get("TENDER_LLM_BASE_URL", DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL,
         model=os.environ.get("TENDER_LLM_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL,
         api_key=os.environ.get("TENDER_LLM_API_KEY", DEFAULT_API_KEY).strip() or DEFAULT_API_KEY,
+        timeout_seconds=_env_timeout_seconds(os.environ.get("TENDER_LLM_TIMEOUT_SECONDS")),
     )
 
 
