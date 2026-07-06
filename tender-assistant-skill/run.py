@@ -138,7 +138,9 @@ SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS = (
     "%",
     "руб",
     "предоставляется",
+    "предоставить",
     "вносится",
+    "внести",
 )
 SECURITY_REQUIREMENT_NEGATIVE_CONTEXT_MARKERS = (
     "не требуется",
@@ -316,15 +318,9 @@ def _security_requirement_item_guardrail_verdict(item: dict) -> str | None:
         SECURITY_REQUIREMENT_TYPE_MARKERS,
         SECURITY_REQUIREMENT_POSITIVE_CONTEXT_MARKERS,
     )
-    has_instrument_context = _any_markers_are_near(
-        text,
-        SECURITY_REQUIREMENT_TYPE_MARKERS,
-        SECURITY_REQUIREMENT_INSTRUMENT_MARKERS,
-    )
-
     if has_positive_context and has_negative_context:
         return "conflict"
-    if has_positive_context or has_instrument_context:
+    if has_positive_context:
         return "positive"
     if has_negative_context:
         return "negative"
