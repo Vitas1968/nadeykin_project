@@ -35,6 +35,35 @@ _PROCUREMENT_METHOD_CONFIRMING_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+_PROCUREMENT_METHOD_NON_AUCTION_PATTERNS = (
+    re.compile(r"(?<!\w)(?:открыт\w*\s+)?запрос\w*\s+предложени\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)запрос\w*\s+котиров\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)конкурс(?!н)\w*\s+в\s+электронн\w*\s+форм\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)открыт\w*\s+конкурс(?!н)\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)способ\s+закупки\s*[:\-]\s*конкурс(?!н)\w*(?!\w)", re.IGNORECASE),
+    re.compile(
+        r"(?<!\w)способ\s+осуществлени\w*\s+закупки\s*[:\-]\s*конкурс(?!н)\w*(?!\w)",
+        re.IGNORECASE,
+    ),
+)
+_PROCUREMENT_METHOD_FALSE_POSITIVE_PATTERNS = (
+    re.compile(r"(?<!\w)конкурсн\w*\s+документаци\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)конкурсн\w*\s+комисси\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)конкурсн\w*\s+производств\w*(?!\w)", re.IGNORECASE),
+)
+_PROCUREMENT_METHOD_WEAK_PATTERNS = (
+    re.compile(r"(?<!\w)электронн\w*\s+документ\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)электронн\w*\s+подпис\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)кэп(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)электронн\w*\s+площадк\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)оператор\w*\s+электронн\w*\s+площадк\w*(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)этп(?!\w)", re.IGNORECASE),
+    re.compile(r"(?<!\w)эдо(?!\w)", re.IGNORECASE),
+    re.compile(
+        r"(?<!\w)контракт\w*\s+в\s+форм\w*\s+электронн\w*\s+документ\w*(?!\w)",
+        re.IGNORECASE,
+    ),
+)
 _EXPLICIT_MSP_OR_DEALER_TERMS = (
     "субъекты мсп",
     "субъектов мсп",
@@ -489,6 +518,84 @@ def _is_procurement_method_confirming_evidence(evidence_item: dict[str, Any]) ->
     return any(pattern.search(evidence_text) for pattern in _PROCUREMENT_METHOD_CONFIRMING_PATTERNS)
 
 
+def _procurement_method_text_matches(
+    evidence_item: dict[str, Any],
+    patterns: tuple[re.Pattern[str], ...],
+) -> bool:
+    evidence_text = _normalize_content_text(_extract_evidence_text(evidence_item))
+    if not evidence_text:
+        return False
+    return any(pattern.search(evidence_text) for pattern in patterns)
+
+
+def _is_procurement_method_non_auction_evidence(evidence_item: dict[str, Any]) -> bool:
+    evidence_text = _normalize_content_text(_extract_evidence_text(evidence_item))
+    if not evidence_text:
+        return False
+    for false_positive_pattern in _PROCUREMENT_METHOD_FALSE_POSITIVE_PATTERNS:
+        evidence_text = false_positive_pattern.sub(" ", evidence_text)
+    evidence_text = " ".join(evidence_text.split())
+    return any(pattern.search(evidence_text) for pattern in _PROCUREMENT_METHOD_NON_AUCTION_PATTERNS)
+
+
+def _is_procurement_method_weak_evidence(evidence_item: dict[str, Any]) -> bool:
+    return _procurement_method_text_matches(evidence_item, _PROCUREMENT_METHOD_WEAK_PATTERNS)
+
+
+def _evaluate_procurement_method_criterion(
+    criterion: dict[str, Any],
+    evidence: list[dict[str, Any]],
+) -> dict:
+    rule_id, block, criterion_text, priority = _resolve_rule_metadata(criterion)
+
+    auction_count = sum(1 for item in evidence if _is_procurement_method_confirming_evidence(item))
+    has_auction = auction_count > 0
+    has_non_auction = any(_is_procurement_method_non_auction_evidence(item) for item in evidence)
+    has_weak = any(_is_procurement_method_weak_evidence(item) for item in evidence)
+
+    concerns: list[str] = []
+    if has_non_auction:
+        concerns.append("procurement_method_non_auction_evidence")
+
+    if has_auction and has_non_auction:
+        status = "conflict"
+        risk = "high"
+        human_review_required = True
+        concerns.append("procurement_method_conflicting_evidence")
+        comment = "Найдены одновременно электронный аукцион и другой способ закупки; требуется ручная проверка."
+    elif has_non_auction:
+        status = "fail"
+        risk = "high"
+        human_review_required = True
+        comment = "Найден другой способ закупки, а не электронный аукцион; требуется ручная проверка."
+    elif has_auction:
+        status = "pass"
+        risk = "low"
+        human_review_required = False
+        comment = _build_rule_comment("pass", auction_count, [])
+    else:
+        status = "unknown"
+        risk = "medium"
+        human_review_required = True
+        if has_weak:
+            concerns.append("procurement_method_weak_evidence")
+        comment = "Подтверждение способа закупки как электронный аукцион не найдено."
+
+    return {
+        "id": rule_id,
+        "block": block,
+        "criterion": criterion_text,
+        "priority": priority,
+        "evidence": evidence,
+        "status": status,
+        "risk": risk,
+        "human_review_required": human_review_required,
+        "comment": comment,
+        "evidence_concerns": concerns,
+        "explicit_dealer_indicator": False,
+    }
+
+
 def find_negative_evidence(evidence: list[dict[str, Any]], negative_terms: list[str]) -> list[dict[str, Any]]:
     if not isinstance(evidence, list):
         raise ValueError("evidence must be a list")
@@ -562,14 +669,10 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
     resolved_evidence = _resolve_evidence_list(evidence) if evidence is not None else _resolve_criterion_matches(criterion)
     rule_id, block, criterion_text, priority = _resolve_rule_metadata(criterion)
 
+    if rule_id == _PROCUREMENT_METHOD_RULE_ID:
+        return _evaluate_procurement_method_criterion(criterion, resolved_evidence)
+
     confirming_evidence = [item for item in resolved_evidence if is_confirming_evidence(item)]
-    has_unconfirmed_procurement_method_evidence = False
-    if rule_id == _PROCUREMENT_METHOD_RULE_ID and confirming_evidence:
-        procurement_method_confirming_evidence = [
-            item for item in confirming_evidence if _is_procurement_method_confirming_evidence(item)
-        ]
-        has_unconfirmed_procurement_method_evidence = not procurement_method_confirming_evidence
-        confirming_evidence = procurement_method_confirming_evidence
 
     negative_terms = extract_negative_terms(criterion)
     negative_evidence = find_negative_evidence(resolved_evidence, negative_terms) if negative_terms else []
@@ -647,12 +750,8 @@ def evaluate_criterion(criterion: dict[str, Any], evidence: list[dict[str, Any]]
         status in {"fail", "conflict"}
         or (status == "unknown" and priority != "low")
         or (status == "pass" and priority == "high" and has_concerns)
-        or has_unconfirmed_procurement_method_evidence
     )
-    if has_unconfirmed_procurement_method_evidence and status in {"unknown", "fail"}:
-        comment = "Найдено evidence, но оно не подтверждает способ закупки как электронный аукцион."
-    else:
-        comment = _build_rule_comment(status, len(confirming_evidence), concerns)
+    comment = _build_rule_comment(status, len(confirming_evidence), concerns)
 
     return {
         "id": rule_id,
