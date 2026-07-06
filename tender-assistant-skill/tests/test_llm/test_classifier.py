@@ -28,6 +28,23 @@ def _rule(status="pass", evidence=None):
     }
 
 
+def _rendered_prompt_for_rule(rule_id, criterion, evidence=None):
+    rule = _rule(evidence=evidence)
+    rule["id"] = rule_id
+    rule["criterion"] = criterion
+    client = FakeClient(
+        _config(enabled=True),
+        LLMClientResponse(
+            ok=True,
+            text=_valid_response_text(rule_id=rule_id),
+        ),
+    )
+
+    classify_criterion(rule, client)
+
+    return client.last_prompt
+
+
 def _valid_response_text(**overrides):
     payload = {
         "invocation_status": "ok",
@@ -105,6 +122,113 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual("ok", result["invocation_status"])
         self.assertEqual("fail", result["verdict"])
         self.assertEqual([0], result["supporting_evidence_ids"])
+
+    def test_procurement_method_prompt_contains_electronic_auction_instruction(self):
+        prompt = _rendered_prompt_for_rule(
+            "procurement_method",
+            "Способ закупки должен быть электронным аукционом.",
+        )
+
+        self.assertIn("электронный аукцион", prompt)
+
+    def test_procurement_method_prompt_contains_electronic_document_flow_weak_evidence(self):
+        prompt = _rendered_prompt_for_rule(
+            "procurement_method",
+            "Способ закупки должен быть электронным аукционом.",
+        )
+
+        self.assertIn("электронный документооборот", prompt)
+        self.assertIn("электронный документ", prompt)
+
+    def test_procurement_method_prompt_excludes_purchase_type_goods_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "procurement_method",
+            "Способ закупки должен быть электронным аукционом.",
+        )
+
+        self.assertNotIn("поставка товара", prompt)
+        self.assertNotIn("оказание услуг", prompt)
+        self.assertNotIn("выполнение работ", prompt)
+
+    def test_purchase_type_goods_prompt_excludes_electronic_auction_instruction(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+        )
+
+        self.assertNotIn("электронный аукцион", prompt)
+        self.assertNotIn("аукцион", prompt)
+
+    def test_purchase_type_goods_prompt_excludes_procurement_only_rules(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+        )
+
+        self.assertNotIn("электронный документооборот", prompt)
+        self.assertNotIn("запрос предложений", prompt)
+        self.assertNotIn("котировка", prompt)
+        self.assertNotIn("способ закупки", prompt)
+
+    def test_purchase_type_goods_prompt_contains_goods_delivery_instruction(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+        )
+
+        self.assertIn("поставка товара", prompt)
+        self.assertIn("кг", prompt)
+        self.assertIn("штуки", prompt)
+
+    def test_purchase_type_goods_prompt_contains_service_and_work_instructions(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+        )
+
+        self.assertIn("оказание услуг", prompt)
+        self.assertIn("выполнение работ", prompt)
+
+    def test_rendered_prompt_replaces_rule_instructions_placeholder(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+        )
+
+        self.assertNotIn("{{rule_instructions}}", prompt)
+
+    def test_rendered_prompt_preserves_russian_utf8_text(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+            evidence=[{"text": "Поставка товара: масло моторное, 10 литров."}],
+        )
+
+        self.assertIn("Предмет закупки должен быть товаром.", prompt)
+        self.assertIn("Поставка товара: масло моторное, 10 литров.", prompt)
+
+    def test_purchase_type_goods_tender_2_regression_prompt_has_no_procurement_terms(self):
+        prompt = _rendered_prompt_for_rule(
+            "purchase_type_goods",
+            "Предмет закупки должен быть товаром.",
+            evidence=[{"text": "Масло моторное, 10 литров, позиция 1."}],
+        )
+
+        self.assertNotIn("аукцион", prompt)
+        self.assertNotIn("электронный документооборот", prompt)
+        self.assertNotIn("запрос предложений", prompt)
+        self.assertNotIn("котировка", prompt)
+
+    def test_other_rule_id_gets_empty_rule_instructions(self):
+        prompt = _rendered_prompt_for_rule(
+            "delivery_deadline",
+            "Срок поставки не более 30 дней.",
+        )
+
+        self.assertNotIn("{{rule_instructions}}", prompt)
+        self.assertNotIn("электронный аукцион", prompt)
+        self.assertNotIn("поставка товара", prompt)
+        self.assertNotIn("оказание услуг", prompt)
 
     def test_conflicting_fake_verdict_marks_conflict(self):
         client = FakeClient(

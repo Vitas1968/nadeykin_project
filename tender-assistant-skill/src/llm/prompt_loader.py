@@ -7,7 +7,7 @@ from typing import Any
 
 PROMPT_RELATIVE_PATH = Path("prompts") / "classify_criterion.md"
 _PLACEHOLDER_RE = re.compile(
-    r"\{\{(?:rule_id|criterion|deterministic_status|evidence_json|provider|model)\}\}"
+    r"\{\{(?:rule_id|criterion|deterministic_status|evidence_json|provider|model|rule_instructions)\}\}"
 )
 
 
@@ -35,6 +35,7 @@ def render_classify_criterion_prompt(
     evidence: list[dict[str, Any]],
     provider: str,
     model: str,
+    rule_instructions: str = "",
 ) -> str:
     prompt = load_classify_criterion_prompt()
     evidence_json = json.dumps(evidence, ensure_ascii=False, indent=2)
@@ -45,6 +46,7 @@ def render_classify_criterion_prompt(
         "{{evidence_json}}": evidence_json,
         "{{provider}}": provider,
         "{{model}}": model,
+        "{{rule_instructions}}": rule_instructions,
     }
 
     return _PLACEHOLDER_RE.sub(lambda match: replacements[match.group(0)], prompt)

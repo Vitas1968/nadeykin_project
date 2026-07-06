@@ -7,6 +7,8 @@ from .local_llm_client import LLMClientConfig, LLMClientResponse, LocalLLMClient
 from .prompt_loader import PromptLoadError, render_classify_criterion_prompt
 
 _UNAVAILABLE_ERROR_TYPES = {"http_error", "url_error", "timeout", "ConnectionRefusedError"}
+_PROCUREMENT_METHOD_RULE_ID = "procurement_method"
+_PURCHASE_TYPE_GOODS_RULE_ID = "purchase_type_goods"
 
 
 class ChatClient(Protocol):
@@ -29,6 +31,40 @@ def _first_text(rule: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 def _rule_id(rule: dict[str, Any]) -> str:
     return schema.normalize_rule_id(_first_text(rule, ("id", "rule_id", "criterion_id")))
+
+
+def _rule_instructions_for_rule_id(rule_id: str) -> str:
+    if rule_id == _PROCUREMENT_METHOD_RULE_ID:
+        return """- Для `procurement_method` классифицируй только способ закупки, а не электронный документооборот.
+- Текст `criterion` не является evidence. Нельзя ставить `pass` только потому, что в criterion написано "электронный аукцион".
+- `pass` допустим только если в evidence явно есть одна из формулировок (включая падежные вариации):
+  - "электронный аукцион";
+  - "аукцион в электронной форме";
+  - "проведение электронного аукциона";
+  - "электронный аукцион на право заключения договора";
+  - близкая грамматическая форма любой из вышеперечисленных фраз, где одновременно присутствует корень "аукцион" и явное указание на электронную форму или электронный способ проведения.
+- Если evidence содержит только электронный документооборот, верни `verdict="unknown"` и `confidence="low"`.
+- Следующие фразы НЕ подтверждают электронный аукцион и НЕ должны давать `pass`:
+  - "электронный документ";
+  - "электронная подпись";
+  - "КЭП";
+  - "электронный документооборот";
+  - "электронная почта";
+  - "ПИК ЕАСУЗ";
+  - "ЭДО";
+  - "контракт в форме электронного документа";
+  - "заявка в виде электронного документа".
+- Если evidence содержит "запрос предложений", "конкурс" или "котировка" как способ закупки, верни `verdict="fail"`, если критерий требует именно электронный аукцион.
+- Для `procurement_method`, если в evidence нет явного указания на "аукцион" вместе с электронной формой, верни `verdict="unknown"`, `confidence="low"`, `human_review_required=true`, `supporting_evidence_ids=[]`."""
+
+    if rule_id == _PURCHASE_TYPE_GOODS_RULE_ID:
+        return """- Для `purchase_type_goods` классифицируй только тип предмета закупки: товар, услуга или работа.
+- `pass` допустим только если evidence явно подтверждает поставку товара (`поставка товара`).
+- Верни `verdict="fail"`, если evidence явно показывает оказание услуг или выполнение работ как основной предмет закупки.
+- Верни `verdict="unknown"` и `confidence="low"`, если evidence содержит только количество, единицы измерения (литры, кг, штуки и т.п.) или позицию без явного указания на передачу товара.
+- Для смешанных случаев товар плюс услуга или работа верни `verdict="conflict"` либо `verdict="unknown"`, если нельзя уверенно определить основной предмет закупки."""
+
+    return ""
 
 
 def _criterion_text(rule: dict[str, Any]) -> str:
@@ -136,6 +172,7 @@ def classify_criterion(rule: dict[str, Any], client: ChatClient | None = None) -
             evidence=evidence,
             provider=config.provider,
             model=config.model,
+            rule_instructions=_rule_instructions_for_rule_id(rule_id),
         )
     except PromptLoadError as exc:
         return schema.build_error_verdict(
