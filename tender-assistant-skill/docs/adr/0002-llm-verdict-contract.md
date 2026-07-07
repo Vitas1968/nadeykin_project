@@ -7,8 +7,8 @@ Accepted
 ## Context
 
 The project uses a deterministic tender scoring pipeline.
-The LLM layer is planned as an auxiliary classifier for narrow evidence-based tasks.
-Before implementing the LLM client, the project must define where LLM output is stored and how it interacts with deterministic rules.
+The LLM layer is an auxiliary classifier for narrow evidence-based tasks.
+This ADR defines where LLM output is stored and how it interacts with deterministic rules.
 
 ## Decision
 
@@ -75,7 +75,16 @@ If Ollama is unavailable, the model times out, or JSON is invalid:
 
 ## Consequences
 
-- LLM integration can be added safely in shadow mode.
+- LLM integration remains safe in shadow mode.
 - Existing deterministic outputs remain authoritative.
 - scenario_classifier remains isolated from LLM metadata.
 - Future code can compare rule verdict and LLM verdict without changing business logic.
+
+## Текущее состояние реализации
+
+- LLM runtime уже реализован.
+- Он работает в advisory/shadow режиме.
+- Selective shadow mode реализован.
+- Compact evidence payload реализован: модель получает короткий набор `evidence`, а не весь тендер.
+- Локальный Ollama endpoint поддержан через OpenAI-compatible API.
+- Deterministic pipeline остаётся источником итогового решения.
