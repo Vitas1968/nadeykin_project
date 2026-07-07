@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ from .schema import DEFAULT_MODEL, DEFAULT_PROVIDER
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_API_KEY = "ollama"
 DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_MAX_TOKENS = 512
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,7 @@ class LLMClientConfig:
     model: str
     api_key: str
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
 
 @dataclass(frozen=True)
@@ -39,22 +43,26 @@ def _env_bool(value: str | None) -> bool:
 
 
 def _env_timeout_seconds(value: str | None) -> int:
+    return _env_positive_int(value, DEFAULT_TIMEOUT_SECONDS)
+
+
+def _env_positive_int(value: str | None, default: int) -> int:
     if value is None:
-        return DEFAULT_TIMEOUT_SECONDS
+        return default
 
     stripped = value.strip()
     if not stripped:
-        return DEFAULT_TIMEOUT_SECONDS
+        return default
 
     try:
         # int() intentionally accepts values like "+30" and "030" as 30.
-        timeout_seconds = int(stripped)
+        parsed_value = int(stripped)
     except ValueError:
-        return DEFAULT_TIMEOUT_SECONDS
+        return default
 
-    if timeout_seconds <= 0:
-        return DEFAULT_TIMEOUT_SECONDS
-    return timeout_seconds
+    if parsed_value <= 0:
+        return default
+    return parsed_value
 
 
 def load_config_from_env() -> LLMClientConfig:
@@ -65,6 +73,7 @@ def load_config_from_env() -> LLMClientConfig:
         model=os.environ.get("TENDER_LLM_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL,
         api_key=os.environ.get("TENDER_LLM_API_KEY", DEFAULT_API_KEY).strip() or DEFAULT_API_KEY,
         timeout_seconds=_env_timeout_seconds(os.environ.get("TENDER_LLM_TIMEOUT_SECONDS")),
+        max_tokens=_env_positive_int(os.environ.get("TENDER_LLM_MAX_TOKENS"), DEFAULT_MAX_TOKENS),
     )
 
 
@@ -73,6 +82,7 @@ class LocalLLMClient:
         self.config = config if config is not None else load_config_from_env()
 
     def chat(self, prompt: str) -> LLMClientResponse:
+        """Return parsed LLM responses; log and re-raise transport errors from urlopen."""
         if not self.config.enabled:
             return LLMClientResponse(
                 ok=False,
@@ -83,17 +93,34 @@ class LocalLLMClient:
             )
 
         request = self._build_request(prompt)
+        provider = self.config.provider
+        start_time = time.monotonic()
+        print(
+            "LLM request start: "
+            f"provider={provider}, model={self.config.model}, timeout={self.config.timeout_seconds}, "
+            f"max_tokens={self.config.max_tokens}, prompt_chars={len(prompt)}",
+            file=sys.stderr,
+        )
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                 response_text = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            return self._error_response("http_error", f"HTTP {exc.code}: {exc.reason}")
-        except urllib.error.URLError as exc:
-            return self._error_response("url_error", str(exc.reason))
-        except TimeoutError as exc:
-            return self._error_response("timeout", str(exc))
-        except OSError as exc:
-            return self._error_response(type(exc).__name__, str(exc))
+        except Exception as exc:
+            elapsed = time.monotonic() - start_time
+            print(
+                "LLM request failed: "
+                f"provider={provider}, model={self.config.model}, elapsed_sec={round(elapsed, 3)}, "
+                f"error_type={type(exc).__name__}, error_message={str(exc)}",
+                file=sys.stderr,
+            )
+            raise
+
+        elapsed = time.monotonic() - start_time
+        print(
+            "LLM request done: "
+            f"provider={provider}, model={self.config.model}, elapsed_sec={round(elapsed, 3)}, "
+            f"response_chars={len(response_text)}",
+            file=sys.stderr,
+        )
 
         try:
             payload = json.loads(response_text)
@@ -117,6 +144,8 @@ class LocalLLMClient:
             "model": self.config.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
+            "max_tokens": self.config.max_tokens,
+            "stream": False,
         }
         data = json.dumps(body).encode("utf-8")
         headers = {
