@@ -180,28 +180,40 @@ def test_chat_logs_start_and_done_to_stderr_without_prompt_or_response(capsys):
 
 
 @pytest.mark.parametrize(
-    "exception",
+    ("exception", "expected_error_type", "expected_error_message"),
     [
-        TimeoutError("request timed out"),
-        urllib.error.HTTPError(
-            url="http://localhost:11434/v1/chat/completions",
-            code=500,
-            msg="Internal Server Error",
-            hdrs=None,
-            fp=None,
+        (TimeoutError("request timed out"), "timeout", "request timed out"),
+        (
+            urllib.error.HTTPError(
+                url="http://localhost:11434/v1/chat/completions",
+                code=500,
+                msg="Internal Server Error",
+                hdrs=None,
+                fp=None,
+            ),
+            "http_error",
+            "HTTP 500: Internal Server Error",
         ),
-        urllib.error.URLError("connection refused"),
+        (urllib.error.URLError("connection refused"), "url_error", "connection refused"),
+        (ConnectionRefusedError("connection refused"), "ConnectionRefusedError", "connection refused"),
     ],
 )
-def test_chat_logs_failed_to_stderr_and_reraises_without_prompt(capsys, exception):
+def test_chat_transport_errors_log_failed_and_return_error_response(
+    capsys,
+    exception,
+    expected_error_type,
+    expected_error_message,
+):
     prompt = "FULL_FAILED_PROMPT_SHOULD_NOT_APPEAR " * 20
     client = LocalLLMClient(_enabled_config())
 
     with patch("llm.local_llm_client.urllib.request.urlopen", side_effect=exception):
-        with pytest.raises(type(exception)):
-            client.chat(prompt)
+        result = client.chat(prompt)
 
     captured = capsys.readouterr()
+    assert not result.ok
+    assert result.error_type == expected_error_type
+    assert result.error_message == expected_error_message
     assert captured.out == ""
     assert "LLM request start: provider=ollama, model=qwen2.5:14b" in captured.err
     assert "LLM request failed: provider=ollama, model=qwen2.5:14b" in captured.err

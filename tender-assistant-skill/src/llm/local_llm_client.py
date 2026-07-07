@@ -82,7 +82,7 @@ class LocalLLMClient:
         self.config = config if config is not None else load_config_from_env()
 
     def chat(self, prompt: str) -> LLMClientResponse:
-        """Return parsed LLM responses; log and re-raise transport errors from urlopen."""
+        """Return parsed LLM responses; transport errors become ok=False responses."""
         if not self.config.enabled:
             return LLMClientResponse(
                 ok=False,
@@ -104,7 +104,10 @@ class LocalLLMClient:
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                 response_text = response.read().decode("utf-8")
-        except Exception as exc:
+
+        except urllib.error.HTTPError as exc:
+            error_type = "http_error"
+            error_message = f"HTTP {exc.code}: {exc.reason}"
             elapsed = time.monotonic() - start_time
             print(
                 "LLM request failed: "
@@ -112,7 +115,40 @@ class LocalLLMClient:
                 f"error_type={type(exc).__name__}, error_message={str(exc)}",
                 file=sys.stderr,
             )
-            raise
+            return self._error_response(error_type, error_message)
+        except urllib.error.URLError as exc:
+            error_type = "url_error"
+            error_message = str(exc.reason)
+            elapsed = time.monotonic() - start_time
+            print(
+                "LLM request failed: "
+                f"provider={provider}, model={self.config.model}, elapsed_sec={round(elapsed, 3)}, "
+                f"error_type={type(exc).__name__}, error_message={str(exc)}",
+                file=sys.stderr,
+            )
+            return self._error_response(error_type, error_message)
+        except TimeoutError as exc:
+            error_type = "timeout"
+            error_message = str(exc)
+            elapsed = time.monotonic() - start_time
+            print(
+                "LLM request failed: "
+                f"provider={provider}, model={self.config.model}, elapsed_sec={round(elapsed, 3)}, "
+                f"error_type={type(exc).__name__}, error_message={str(exc)}",
+                file=sys.stderr,
+            )
+            return self._error_response(error_type, error_message)
+        except OSError as exc:
+            error_type = type(exc).__name__
+            error_message = str(exc)
+            elapsed = time.monotonic() - start_time
+            print(
+                "LLM request failed: "
+                f"provider={provider}, model={self.config.model}, elapsed_sec={round(elapsed, 3)}, "
+                f"error_type={type(exc).__name__}, error_message={str(exc)}",
+                file=sys.stderr,
+            )
+            return self._error_response(error_type, error_message)
 
         elapsed = time.monotonic() - start_time
         print(
