@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -177,6 +178,38 @@ SECURITY_REQUIREMENT_REPLACEMENT_CONTEXT_MARKERS = (
     "отзыв",
     "прекращение действия",
 )
+LLM_SELECTIVE_SKIP_REASON = (
+    "Deterministic rule is pass/low/no-review; LLM shadow skipped by selective mode."
+)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _should_skip_llm_shadow_by_deterministic_result(rule: dict) -> bool:
+    if not _env_bool("TENDER_LLM_SELECTIVE_ENABLED", default=False):
+        return False
+    if _env_bool("TENDER_LLM_RUN_ON_PASS", default=False):
+        return False
+
+    return (
+        normalize_status(rule.get("status")) == "pass"
+        and str(rule.get("risk")).strip().lower() == "low"
+        and "human_review_required" in rule
+        and bool(rule.get("human_review_required")) is False
+    )
 
 
 def _resolve_docx_template_path(template_arg: str | None) -> Path:
@@ -496,6 +529,19 @@ def _apply_llm_shadow_verdict(result: dict) -> None:
         return
 
     for target_rule in target_rules:
+        if _should_skip_llm_shadow_by_deterministic_result(target_rule):
+            target_rule["llm_verdict"] = build_skipped_verdict(
+                rule_id=normalize_rule_id(target_rule.get("id")),
+                deterministic_status=normalize_status(target_rule.get("status")),
+                provider=config.provider,
+                model=config.model,
+                reason=LLM_SELECTIVE_SKIP_REASON,
+                verdict="pass",
+                confidence="high",
+                human_review_required=False,
+            )
+            continue
+
         skip_reason = _llm_shadow_skip_reason(target_rule)
         if skip_reason is not None:
             skipped_verdict_args = {

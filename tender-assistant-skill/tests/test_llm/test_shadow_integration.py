@@ -1,4 +1,5 @@
 import copy
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -143,6 +144,153 @@ class ShadowIntegrationTests(unittest.TestCase):
         self.assertNotIn("llm_verdict", procurement_rule)
         self.assertEqual(deterministic_before, _deterministic_rules(result))
         self.assertEqual(scenario_before, _scenario(result))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_selective_disabled_by_default_does_not_skip_pass_rule(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
+
+        self.assertFalse(pipeline_run._should_skip_llm_shadow_by_deterministic_result(procurement_rule))
+
+    @patch.dict(
+        os.environ,
+        {
+            "TENDER_LLM_SELECTIVE_ENABLED": "true",
+            "TENDER_LLM_RUN_ON_PASS": "false",
+        },
+        clear=True,
+    )
+    def test_selective_enabled_skips_pass_low_no_review_rule_without_classifier_call(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
+        result = _result(procurement_rule)
+        deterministic_before = _deterministic_rules(result)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        llm_verdict = procurement_rule["llm_verdict"]
+        self.assertEqual("skipped", llm_verdict["invocation_status"])
+        self.assertEqual("pass", llm_verdict["verdict"])
+        self.assertEqual("high", llm_verdict["confidence"])
+        self.assertFalse(llm_verdict["human_review_required"])
+        self.assertIn("selective mode", llm_verdict["reason"])
+        self.assertEqual(deterministic_before, _deterministic_rules(result))
+
+    @patch.dict(
+        os.environ,
+        {
+            "TENDER_LLM_SELECTIVE_ENABLED": "true",
+            "TENDER_LLM_RUN_ON_PASS": "true",
+        },
+        clear=True,
+    )
+    def test_selective_run_on_pass_calls_classifier_when_guardrail_allows_it(self):
+        procurement_rule = _rule("procurement_method")
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "pass", "warnings": []}
+
+        self.assertFalse(pipeline_run._should_skip_llm_shadow_by_deterministic_result(procurement_rule))
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+        self.assertEqual(llm_verdict, procurement_rule["llm_verdict"])
+
+    @patch.dict(
+        os.environ,
+        {
+            "TENDER_LLM_SELECTIVE_ENABLED": "true",
+            "TENDER_LLM_RUN_ON_PASS": "false",
+        },
+        clear=True,
+    )
+    def test_selective_enabled_does_not_skip_non_obvious_deterministic_results(self):
+        cases = (
+            {"status": "unknown"},
+            {"status": "fail"},
+            {"status": "conflict"},
+            {"missing": "status"},
+            {"risk": "medium"},
+            {"risk": "high"},
+            {"missing": "risk"},
+            {"human_review_required": True},
+            {"missing": "human_review_required"},
+        )
+
+        for changes in cases:
+            with self.subTest(changes=changes):
+                rule = _rule("procurement_method")
+                if "missing" in changes:
+                    rule.pop(changes["missing"])
+                else:
+                    rule.update(changes)
+
+                self.assertFalse(pipeline_run._should_skip_llm_shadow_by_deterministic_result(rule))
+
+    @patch.dict(
+        os.environ,
+        {
+            "TENDER_LLM_SELECTIVE_ENABLED": "true",
+            "TENDER_LLM_RUN_ON_PASS": "false",
+        },
+        clear=True,
+    )
+    def test_selective_enabled_preserves_guardrail_skip_for_non_pass_rule(self):
+        procurement_rule = _rule("procurement_method", status="fail", risk="high", human_review_required=True)
+        procurement_rule["evidence"] = [
+            {"text": "Заявка оформляется в виде электронного документа, подписанного КЭП."}
+        ]
+        result = _result(procurement_rule)
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=SimpleNamespace(invocation_status="unexpected"),
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_not_called()
+        llm_verdict = procurement_rule["llm_verdict"]
+        self.assertEqual("skipped", llm_verdict["invocation_status"])
+        self.assertEqual("unknown", llm_verdict["verdict"])
+        self.assertEqual("low", llm_verdict["confidence"])
+        self.assertTrue(llm_verdict["human_review_required"])
+        self.assertEqual("Evidence does not contain explicit procurement method phrase.", llm_verdict["reason"])
+
+    @patch.dict(
+        os.environ,
+        {
+            "TENDER_LLM_SELECTIVE_ENABLED": "true",
+            "TENDER_LLM_RUN_ON_PASS": "false",
+        },
+        clear=True,
+    )
+    def test_selective_enabled_calls_classifier_for_non_pass_rule_when_guardrail_allows_it(self):
+        procurement_rule = _rule("procurement_method", status="fail", risk="high", human_review_required=True)
+        procurement_rule["evidence"] = [{"text": "Способ определения поставщика: электронный аукцион."}]
+        result = _result(procurement_rule)
+        llm_verdict = {"invocation_status": "ok", "verdict": "fail", "warnings": []}
+
+        with patch.object(pipeline_run, "load_config_from_env", return_value=_config(True)), patch.object(
+            pipeline_run,
+            "classify_criterion",
+            return_value=llm_verdict,
+        ) as classify_mock:
+            pipeline_run._apply_llm_shadow_verdict(result)
+
+        classify_mock.assert_called_once_with(procurement_rule)
+        self.assertEqual(llm_verdict, procurement_rule["llm_verdict"])
 
     def test_enabled_mode_calls_llm_only_for_procurement_method(self):
         core_rule = _rule("subject_okpd2_oil")
