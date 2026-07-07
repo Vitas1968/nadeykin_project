@@ -173,8 +173,7 @@ def _evidence_payload(
         if not isinstance(item, dict) or not _evidence_has_text(item):
             continue
         evidence_item = copy.deepcopy(item)
-        if "llm_evidence_id" not in evidence_item:
-            evidence_item["llm_evidence_id"] = index
+        evidence_item["llm_evidence_id"] = index
         _truncate_evidence_item(evidence_item, max_chars)
         payload.append(evidence_item)
     return payload

@@ -221,10 +221,10 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(1, len(result))
         self.assertEqual("valid", result[0]["text"])
 
-    def test_evidence_payload_preserves_existing_llm_evidence_id(self):
+    def test_evidence_payload_replaces_existing_llm_evidence_id_with_original_position(self):
         result = _evidence_payload(_rule(evidence=[{"text": "valid", "llm_evidence_id": "retrieval-id"}]))
 
-        self.assertEqual("retrieval-id", result[0]["llm_evidence_id"])
+        self.assertEqual(0, result[0]["llm_evidence_id"])
 
     def test_evidence_payload_adds_original_position_as_llm_evidence_id(self):
         rule = _rule(evidence=["not a dict", {"text": "valid"}])
