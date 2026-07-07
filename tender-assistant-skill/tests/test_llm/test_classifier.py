@@ -16,6 +16,7 @@ from llm.classifier import (
     classify_criterion,
 )
 from llm.local_llm_client import LLMClientConfig, LLMClientResponse
+from llm.prompt_loader import render_classify_criterion_prompt
 
 
 def _config(enabled):
@@ -150,6 +151,31 @@ class ClassifierTests(unittest.TestCase):
 
         self.assertEqual(["first", "second"], [item["text"] for item in result])
 
+    def test_evidence_payload_contains_only_allowed_keys_with_numeric_score(self):
+        rule = _rule(
+            evidence=[
+                {
+                    "snippet": "selected snippet",
+                    "text": "full text",
+                    "block": {"text": "block text"},
+                    "metadata": {"page": 1},
+                    "path": "source.pdf",
+                    "source": "retrieval",
+                    "extra": "ignored",
+                    "score": 0.75,
+                }
+            ]
+        )
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual({"llm_evidence_id": 0, "text": "selected snippet", "score": 0.75}, result[0])
+        self.assertNotIn("snippet", result[0])
+        self.assertNotIn("block", result[0])
+        self.assertNotIn("metadata", result[0])
+        self.assertNotIn("path", result[0])
+        self.assertNotIn("source", result[0])
+
     def test_evidence_payload_truncates_long_text(self):
         result = _evidence_payload(_rule(evidence=[{"text": "x" * 50}]), max_chars=30)
 
@@ -159,14 +185,16 @@ class ClassifierTests(unittest.TestCase):
     def test_evidence_payload_truncates_long_snippet(self):
         result = _evidence_payload(_rule(evidence=[{"snippet": "x" * 50}]), max_chars=30)
 
-        self.assertLessEqual(len(result[0]["snippet"]), 30)
-        self.assertIn(TRUNCATION_MARKER, result[0]["snippet"])
+        self.assertLessEqual(len(result[0]["text"]), 30)
+        self.assertIn(TRUNCATION_MARKER, result[0]["text"])
+        self.assertNotIn("snippet", result[0])
 
     def test_evidence_payload_truncates_long_block_text(self):
         result = _evidence_payload(_rule(evidence=[{"block": {"text": "x" * 50}}]), max_chars=30)
 
-        self.assertLessEqual(len(result[0]["block"]["text"]), 30)
-        self.assertIn(TRUNCATION_MARKER, result[0]["block"]["text"])
+        self.assertLessEqual(len(result[0]["text"]), 30)
+        self.assertIn(TRUNCATION_MARKER, result[0]["text"])
+        self.assertNotIn("block", result[0])
 
     def test_evidence_payload_does_not_mark_exact_length_text(self):
         result = _evidence_payload(_rule(evidence=[{"text": "x" * 20}]), max_chars=20)
@@ -188,13 +216,48 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(["first", "second"], [item["text"] for item in result])
 
     def test_evidence_payload_does_not_mutate_rule_or_nested_block(self):
-        rule = _rule(evidence=[{"text": "x" * 50, "block": {"text": "y" * 50}}])
+        rule = _rule(evidence=[{"snippet": "short", "text": "x" * 50, "block": {"text": "y" * 50}}])
         original_rule = copy.deepcopy(rule)
 
         result = _evidence_payload(rule, max_chars=20)
 
         self.assertEqual(original_rule, rule)
-        self.assertIsNot(result[0]["block"], rule["evidence"][0]["block"])
+        self.assertEqual({"llm_evidence_id": 0, "text": "short"}, result[0])
+
+    def test_evidence_payload_chooses_snippet_before_text_and_block_text(self):
+        result = _evidence_payload(
+            _rule(evidence=[{"snippet": "valid snippet", "text": "valid text", "block": {"text": "valid block"}}])
+        )
+
+        self.assertEqual("valid snippet", result[0]["text"])
+
+    def test_evidence_payload_chooses_text_when_snippet_is_empty(self):
+        for snippet in ("", "   "):
+            with self.subTest(snippet=repr(snippet)):
+                result = _evidence_payload(_rule(evidence=[{"snippet": snippet, "text": "valid text"}]))
+
+                self.assertEqual("valid text", result[0]["text"])
+
+    def test_evidence_payload_chooses_block_text_when_snippet_and_text_are_empty(self):
+        result = _evidence_payload(
+            _rule(evidence=[{"snippet": " ", "text": "", "block": {"text": "valid block text"}}])
+        )
+
+        self.assertEqual("valid block text", result[0]["text"])
+
+    def test_evidence_payload_skips_item_when_all_text_sources_are_empty(self):
+        rule = _rule(
+            evidence=[
+                {"snippet": "", "text": " ", "block": {"text": ""}},
+                {"metadata": {"page": 1}},
+                {"text": "valid"},
+            ]
+        )
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual(1, len(result))
+        self.assertEqual("valid", result[0]["text"])
 
     def test_evidence_payload_ignores_missing_none_and_non_string_text_fields(self):
         rule = _rule(
@@ -209,9 +272,35 @@ class ClassifierTests(unittest.TestCase):
         result = _evidence_payload(rule)
 
         self.assertEqual(1, len(result))
-        self.assertEqual(123, result[0]["text"])
-        self.assertEqual("valid snippet", result[0]["snippet"])
-        self.assertEqual(456, result[0]["block"]["text"])
+        self.assertEqual("valid snippet", result[0]["text"])
+        self.assertEqual({"llm_evidence_id": 3, "text": "valid snippet"}, result[0])
+
+    def test_evidence_payload_omits_invalid_scores(self):
+        for score in (None, "0.5", True, False):
+            with self.subTest(score=score):
+                item = {"text": "valid"}
+                if score is not None:
+                    item["score"] = score
+
+                result = _evidence_payload(_rule(evidence=[item]))
+
+                self.assertNotIn("score", result[0])
+
+    def test_evidence_payload_keeps_original_indexes_with_interleaved_invalid_items(self):
+        rule = _rule(evidence=[{"text": ""}, {"text": "first"}, "invalid", {"text": "second"}])
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual([1, 3], [item["llm_evidence_id"] for item in result])
+        self.assertEqual(["first", "second"], [item["text"] for item in result])
+
+    def test_evidence_payload_max_items_takes_first_valid_items_in_current_order(self):
+        rule = _rule(evidence=[{"text": ""}, {"text": "first"}, {"text": "second"}, {"text": "third"}])
+
+        result = _evidence_payload(rule, max_items=2)
+
+        self.assertEqual(["first", "second"], [item["text"] for item in result])
+        self.assertEqual([1, 2], [item["llm_evidence_id"] for item in result])
 
     def test_evidence_payload_skips_non_dict_items_without_raising(self):
         rule = _rule(evidence=["not a dict", {"text": "valid"}, 42])
@@ -290,6 +379,45 @@ class ClassifierTests(unittest.TestCase):
         self.assertIn("prompt_chars=", log_output)
         self.assertNotIn(secret_evidence, log_output)
         self.assertNotIn(client.last_prompt, log_output)
+
+    def test_classify_criterion_prompt_uses_snippet_and_excludes_block_text(self):
+        client = FakeClient(_config(enabled=True), LLMClientResponse(ok=True, text=_valid_response_text()))
+
+        classify_criterion(
+            _rule(evidence=[{"snippet": "selected snippet", "text": "full text", "block": {"text": "hidden block"}}]),
+            client,
+        )
+
+        self.assertIn("selected snippet", client.last_prompt)
+        self.assertNotIn("full text", client.last_prompt)
+        self.assertNotIn("hidden block", client.last_prompt)
+
+    def test_classify_criterion_prompt_chars_are_smaller_with_compact_evidence(self):
+        evidence_item = {
+            "snippet": "selected snippet",
+            "text": "T" * 2000,
+            "block": {"text": "B" * 2000},
+            "metadata": {"raw": "M" * 2000},
+            "score": 1,
+        }
+        client = FakeClient(_config(enabled=True), LLMClientResponse(ok=True, text=_valid_response_text()))
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            classify_criterion(_rule(evidence=[evidence_item]), client)
+
+        bloated_prompt = render_classify_criterion_prompt(
+            rule_id="criterion-1",
+            criterion="Delivery deadline",
+            deterministic_status="pass",
+            evidence=[dict(evidence_item, llm_evidence_id=0)],
+            provider="fake-provider",
+            model="fake-model",
+        )
+        compact_prompt_len = len(client.last_prompt)
+
+        self.assertIn(f"prompt_chars={compact_prompt_len}", stderr.getvalue())
+        self.assertGreater(len(bloated_prompt) - compact_prompt_len, 5000)
 
     def test_procurement_method_prompt_contains_electronic_auction_instruction(self):
         prompt = _rendered_prompt_for_rule(

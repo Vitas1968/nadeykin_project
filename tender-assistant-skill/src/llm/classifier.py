@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import os
 import sys
 from typing import Any, Protocol
@@ -120,17 +119,21 @@ def _criterion_text(rule: dict[str, Any]) -> str:
     return _first_text(rule, ("criterion", "description", "name"))
 
 
-def _evidence_has_text(item: dict[str, Any]) -> bool:
-    for key in ("snippet", "text"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return True
+def _evidence_text_for_llm(item: dict[str, Any]) -> str:
+    snippet = item.get("snippet")
+    if isinstance(snippet, str) and snippet.strip():
+        return snippet
+
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text
 
     block = item.get("block")
     if isinstance(block, dict):
-        value = block.get("text")
-        return isinstance(value, str) and bool(value.strip())
-    return False
+        block_text = block.get("text")
+        if isinstance(block_text, str) and block_text.strip():
+            return block_text
+    return ""
 
 
 def _truncate_text_for_llm(text: str, max_chars: int) -> str:
@@ -141,19 +144,6 @@ def _truncate_text_for_llm(text: str, max_chars: int) -> str:
     if usable_len < 0:
         return TRUNCATION_MARKER[:max_chars]
     return text[:usable_len].rstrip() + TRUNCATION_MARKER
-
-
-def _truncate_evidence_item(evidence_item: dict[str, Any], max_chars: int) -> None:
-    for key in ("text", "snippet"):
-        value = evidence_item.get(key)
-        if isinstance(value, str):
-            evidence_item[key] = _truncate_text_for_llm(value, max_chars)
-
-    block = evidence_item.get("block")
-    if isinstance(block, dict):
-        value = block.get("text")
-        if isinstance(value, str):
-            block["text"] = _truncate_text_for_llm(value, max_chars)
 
 
 def _evidence_payload(
@@ -170,11 +160,18 @@ def _evidence_payload(
     for index, item in enumerate(evidence):
         if len(payload) >= max_items:
             break
-        if not isinstance(item, dict) or not _evidence_has_text(item):
+        if not isinstance(item, dict):
             continue
-        evidence_item = copy.deepcopy(item)
-        evidence_item["llm_evidence_id"] = index
-        _truncate_evidence_item(evidence_item, max_chars)
+        text = _evidence_text_for_llm(item)
+        if not text:
+            continue
+        evidence_item: dict[str, Any] = {
+            "llm_evidence_id": index,
+            "text": _truncate_text_for_llm(text, max_chars),
+        }
+        score = item.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            evidence_item["score"] = score
         payload.append(evidence_item)
     return payload
 
