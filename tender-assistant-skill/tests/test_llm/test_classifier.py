@@ -1,8 +1,20 @@
 import copy
+import io
 import json
+import os
 import unittest
+from unittest.mock import patch
 
-from llm.classifier import classify_criterion
+from llm.classifier import (
+    DEFAULT_MAX_EVIDENCE_CHARS,
+    DEFAULT_MAX_EVIDENCE_ITEMS,
+    HARD_MAX_EVIDENCE_CHARS,
+    HARD_MAX_EVIDENCE_ITEMS,
+    TRUNCATION_MARKER,
+    _env_positive_int,
+    _evidence_payload,
+    classify_criterion,
+)
 from llm.local_llm_client import LLMClientConfig, LLMClientResponse
 
 
@@ -122,6 +134,162 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual("ok", result["invocation_status"])
         self.assertEqual("fail", result["verdict"])
         self.assertEqual([0], result["supporting_evidence_ids"])
+
+    def test_evidence_payload_limits_default_items_to_three(self):
+        rule = _rule(evidence=[{"text": f"evidence {index}"} for index in range(4)])
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual(DEFAULT_MAX_EVIDENCE_ITEMS, len(result))
+        self.assertEqual(["evidence 0", "evidence 1", "evidence 2"], [item["text"] for item in result])
+
+    def test_evidence_payload_max_items_keeps_current_order(self):
+        rule = _rule(evidence=[{"text": "first"}, {"text": "second"}, {"text": "third"}])
+
+        result = _evidence_payload(rule, max_items=2)
+
+        self.assertEqual(["first", "second"], [item["text"] for item in result])
+
+    def test_evidence_payload_truncates_long_text(self):
+        result = _evidence_payload(_rule(evidence=[{"text": "x" * 50}]), max_chars=30)
+
+        self.assertLessEqual(len(result[0]["text"]), 30)
+        self.assertIn(TRUNCATION_MARKER, result[0]["text"])
+
+    def test_evidence_payload_truncates_long_snippet(self):
+        result = _evidence_payload(_rule(evidence=[{"snippet": "x" * 50}]), max_chars=30)
+
+        self.assertLessEqual(len(result[0]["snippet"]), 30)
+        self.assertIn(TRUNCATION_MARKER, result[0]["snippet"])
+
+    def test_evidence_payload_truncates_long_block_text(self):
+        result = _evidence_payload(_rule(evidence=[{"block": {"text": "x" * 50}}]), max_chars=30)
+
+        self.assertLessEqual(len(result[0]["block"]["text"]), 30)
+        self.assertIn(TRUNCATION_MARKER, result[0]["block"]["text"])
+
+    def test_evidence_payload_does_not_mark_exact_length_text(self):
+        result = _evidence_payload(_rule(evidence=[{"text": "x" * 20}]), max_chars=20)
+
+        self.assertEqual("x" * 20, result[0]["text"])
+        self.assertNotIn(TRUNCATION_MARKER, result[0]["text"])
+
+    def test_evidence_payload_does_not_mark_short_text(self):
+        result = _evidence_payload(_rule(evidence=[{"text": "short"}]), max_chars=20)
+
+        self.assertEqual("short", result[0]["text"])
+        self.assertNotIn(TRUNCATION_MARKER, result[0]["text"])
+
+    def test_evidence_payload_keeps_all_items_below_max_items(self):
+        rule = _rule(evidence=[{"text": "first"}, {"text": "second"}])
+
+        result = _evidence_payload(rule, max_items=3)
+
+        self.assertEqual(["first", "second"], [item["text"] for item in result])
+
+    def test_evidence_payload_does_not_mutate_rule_or_nested_block(self):
+        rule = _rule(evidence=[{"text": "x" * 50, "block": {"text": "y" * 50}}])
+        original_rule = copy.deepcopy(rule)
+
+        result = _evidence_payload(rule, max_chars=20)
+
+        self.assertEqual(original_rule, rule)
+        self.assertIsNot(result[0]["block"], rule["evidence"][0]["block"])
+
+    def test_evidence_payload_ignores_missing_none_and_non_string_text_fields(self):
+        rule = _rule(
+            evidence=[
+                {"text": None},
+                {"snippet": 123},
+                {"block": {"text": None}},
+                {"text": 123, "snippet": "valid snippet", "block": {"text": 456}},
+            ]
+        )
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual(1, len(result))
+        self.assertEqual(123, result[0]["text"])
+        self.assertEqual("valid snippet", result[0]["snippet"])
+        self.assertEqual(456, result[0]["block"]["text"])
+
+    def test_evidence_payload_skips_non_dict_items_without_raising(self):
+        rule = _rule(evidence=["not a dict", {"text": "valid"}, 42])
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual(1, len(result))
+        self.assertEqual("valid", result[0]["text"])
+
+    def test_evidence_payload_preserves_existing_llm_evidence_id(self):
+        result = _evidence_payload(_rule(evidence=[{"text": "valid", "llm_evidence_id": "retrieval-id"}]))
+
+        self.assertEqual("retrieval-id", result[0]["llm_evidence_id"])
+
+    def test_evidence_payload_adds_original_position_as_llm_evidence_id(self):
+        rule = _rule(evidence=["not a dict", {"text": "valid"}])
+
+        result = _evidence_payload(rule)
+
+        self.assertEqual(1, result[0]["llm_evidence_id"])
+
+    def test_classify_criterion_env_max_evidence_items_limits_prompt_payload(self):
+        evidence = [{"text": "first"}, {"text": "second"}, {"text": "third"}]
+        client = FakeClient(_config(enabled=True), LLMClientResponse(ok=True, text=_valid_response_text()))
+
+        with patch.dict(os.environ, {"TENDER_LLM_MAX_EVIDENCE_ITEMS": "2"}, clear=False):
+            classify_criterion(_rule(evidence=evidence), client)
+
+        self.assertIn("first", client.last_prompt)
+        self.assertIn("second", client.last_prompt)
+        self.assertNotIn("third", client.last_prompt)
+
+    def test_classify_criterion_env_max_evidence_chars_limits_prompt_payload(self):
+        client = FakeClient(_config(enabled=True), LLMClientResponse(ok=True, text=_valid_response_text()))
+
+        with patch.dict(os.environ, {"TENDER_LLM_MAX_EVIDENCE_CHARS": "100"}, clear=False):
+            classify_criterion(_rule(evidence=[{"text": "x" * 150}]), client)
+
+        self.assertIn(TRUNCATION_MARKER, client.last_prompt)
+        self.assertNotIn("x" * 101, client.last_prompt)
+
+    def test_env_positive_int_invalid_values_return_default(self):
+        for value in ("", "abc", "0", "-1", "3.5"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    DEFAULT_MAX_EVIDENCE_ITEMS,
+                    _env_positive_int(value, DEFAULT_MAX_EVIDENCE_ITEMS, HARD_MAX_EVIDENCE_ITEMS),
+                )
+
+    def test_env_positive_int_accepts_spaces_and_plus_sign(self):
+        self.assertEqual(2, _env_positive_int(" 2 ", DEFAULT_MAX_EVIDENCE_ITEMS, HARD_MAX_EVIDENCE_ITEMS))
+        self.assertEqual(2, _env_positive_int("+2", DEFAULT_MAX_EVIDENCE_ITEMS, HARD_MAX_EVIDENCE_ITEMS))
+
+    def test_env_positive_int_clamps_to_hard_max(self):
+        self.assertEqual(
+            HARD_MAX_EVIDENCE_ITEMS,
+            _env_positive_int("999", DEFAULT_MAX_EVIDENCE_ITEMS, HARD_MAX_EVIDENCE_ITEMS),
+        )
+        self.assertEqual(
+            HARD_MAX_EVIDENCE_CHARS,
+            _env_positive_int("999999", DEFAULT_MAX_EVIDENCE_CHARS, HARD_MAX_EVIDENCE_CHARS),
+        )
+
+    def test_classify_criterion_logs_shadow_diagnostics_without_payloads(self):
+        secret_evidence = "SECRET_EVIDENCE_TEXT"
+        client = FakeClient(_config(enabled=True), LLMClientResponse(ok=True, text=_valid_response_text()))
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            classify_criterion(_rule(evidence=[{"text": secret_evidence}]), client)
+
+        log_output = stderr.getvalue()
+        self.assertIn("LLM shadow classify", log_output)
+        self.assertIn("rule_id=criterion-1", log_output)
+        self.assertIn("evidence_items=1", log_output)
+        self.assertIn("prompt_chars=", log_output)
+        self.assertNotIn(secret_evidence, log_output)
+        self.assertNotIn(client.last_prompt, log_output)
 
     def test_procurement_method_prompt_contains_electronic_auction_instruction(self):
         prompt = _rendered_prompt_for_rule(
