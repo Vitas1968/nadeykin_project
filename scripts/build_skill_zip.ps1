@@ -15,17 +15,13 @@ try {
     $RepoRoot = Split-Path -Parent $ScriptDir
     $SkillDir = Join-Path $RepoRoot "tender-assistant-skill"
     if ([string]::IsNullOrWhiteSpace($OutDir)) {
-        if ([string]::IsNullOrWhiteSpace($env:SKILL_OUT_DIR)) {
-            $OutDir = Join-Path ([System.IO.Path]::GetTempPath()) "skill_zip_test"
-        }
-        else {
-            $OutDir = $env:SKILL_OUT_DIR
-        }
+        $OutDir = "D:\skill_zip_test"
     }
 
     $ResolvedOutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
     $ZipPath = Join-Path $ResolvedOutDir "tender-assistant-skill.zip"
     $StageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tender-assistant-skill-stage-" + [System.Guid]::NewGuid().ToString("N"))
+    $UserReadme = Join-Path $SkillDir "README_skill_zip_user.md"
 
     if (-not (Test-Path $SkillDir)) {
         throw "Skill directory not found: $SkillDir"
@@ -39,6 +35,10 @@ try {
         throw "run.py not found in skill directory."
     }
 
+    if (-not (Test-Path $UserReadme)) {
+        throw "README_skill_zip_user.md not found in skill directory: $UserReadme"
+    }
+
     # These folders are QA workspace placeholders; build staging stays in temp.
     New-Item -ItemType Directory -Force $ResolvedOutDir | Out-Null
     New-Item -ItemType Directory -Force (Join-Path $ResolvedOutDir "input") | Out-Null
@@ -46,6 +46,7 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $ResolvedOutDir "skill") | Out-Null
 
     Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue
+    Copy-Item $UserReadme (Join-Path $ResolvedOutDir "README_skill_zip_user.md") -Force
     New-Item -ItemType Directory -Force $StageDir | Out-Null
 
     $RequiredFiles = @(
@@ -77,11 +78,6 @@ try {
             throw "Required directory missing: $Source"
         }
         Copy-Item $Source (Join-Path $StageDir $Dir) -Recurse -Force
-    }
-
-    $UserReadme = Join-Path $RepoRoot "README_skill_zip_user.md"
-    if (Test-Path $UserReadme) {
-        Copy-Item $UserReadme (Join-Path $StageDir "README_skill_zip_user.md") -Force
     }
 
     Get-ChildItem $StageDir -Directory -Recurse -Force -Filter "__pycache__" | Remove-Item -Recurse -Force
