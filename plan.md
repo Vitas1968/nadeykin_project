@@ -40,8 +40,8 @@ questions_for_customer.md
 
 Сценарий	Что означает	Действие
 not_relevant	нерелевантный тендер	исключить из воронки
-relevant_llk	релевантен для ЛЛК	передать в CRM
-relevant_dealer	релевантен для дилера ЛЛК	направить дилеру
+relevant_direct	релевантен для прямой обработки	передать в CRM
+relevant_dealer	релевантен для дилера / партнёра — направить дилеру / партнёру
 need_human_review	данных мало / противоречия / спорный риск	человек должен проверить
 
 Это главное. Не просто «заполнить шаблон», а классифицировать тендер и объяснить почему.
@@ -90,7 +90,7 @@ elif has_msp_restriction:
     scenario = "relevant_dealer"
 
 elif has_oil_subject and not has_msp_restriction and logistics_ok:
-    scenario = "relevant_llk"
+    scenario = "relevant_direct"
 
 else:
     scenario = "need_human_review"
@@ -182,9 +182,9 @@ output/tender_2/
 
 Тебе нужно показать не просто код, а результат на их трёх тендерах:
 
-Тендер 1 → relevant_llk / relevant_dealer / need_human_review
-Тендер 2 → relevant_llk / relevant_dealer / need_human_review
-Тендер 3 → relevant_llk / relevant_dealer / need_human_review
+Тендер 1 → relevant_direct / relevant_dealer / need_human_review
+Тендер 2 → relevant_direct / relevant_dealer / need_human_review
+Тендер 3 → relevant_direct / relevant_dealer / need_human_review
 
 И для каждого:
 
@@ -220,3 +220,25 @@ output/tender_2/
 Упаковать как skill.
 
 Ключевое: сначала скоринг, потом заполнение документов. Заполнение анкет и коммерческих форм — это второй этап, его лучше не смешивать с MVP.
+
+
+Рекомендуемый порядок дальше на 11:00 03.07.2026
+Сделать run.py как тонкий CLI-оркестратор.
+Он должен вызывать уже готовый evaluate_tender_path() и сохранять минимум tender_score.json.
+Сделать questions_writer.py.
+На первом этапе deterministic: брать unknown, conflict, fail, human_review_required=true и формировать вопросы человеку.
+Сделать summary_writer.py.
+На первом этапе deterministic Markdown: статистика, риски, top evidence, вопросы, предварительная рекомендация.
+Потом делать scenario_classifier.py.
+Он должен превращать набор rule-объектов в один сценарий: not_relevant, relevant_direct, relevant_dealer, need_human_review. Сценарии прямо зафиксированы в плане.
+Только после этого возвращаться к LLM-слою.
+В плане LLM должен работать с короткими фрагментами и узкими задачами, а не анализировать весь тендер целиком.
+Ближайшая задача
+
+Следующий prompt лучше дать на реализацию run.py, но в минимальном варианте:
+
+input folder
+→ evaluate_tender_path()
+→ output/tender_score.json
+
+Без summary, questions и scenario. Сначала нужно получить стабильный машинный JSON на реальном тендере. Потом уже на него навешивать questions_writer, summary_writer и scenario_classifier.
