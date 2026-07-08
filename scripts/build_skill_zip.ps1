@@ -56,6 +56,8 @@ try {
     New-Item -ItemType Directory -Force $StageDir | Out-Null
 
     $RequiredFiles = @(
+        "README_skill_zip_user.md",
+        "RESULTS_INTERPRETATION.md",
         "SKILL.md",
         "AGENT_PROMPT.md",
         "requirements.txt",
