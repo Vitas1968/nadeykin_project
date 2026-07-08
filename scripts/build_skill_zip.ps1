@@ -79,9 +79,9 @@ try {
         Copy-Item $Source (Join-Path $StageDir $Dir) -Recurse -Force
     }
 
-    $RepoReadme = Join-Path $RepoRoot "README.md"
-    if (Test-Path $RepoReadme) {
-        Copy-Item $RepoReadme (Join-Path $StageDir "README.md") -Force
+    $UserReadme = Join-Path $RepoRoot "README_skill_zip_user.md"
+    if (Test-Path $UserReadme) {
+        Copy-Item $UserReadme (Join-Path $StageDir "README_skill_zip_user.md") -Force
     }
 
     Get-ChildItem $StageDir -Directory -Recurse -Force -Filter "__pycache__" | Remove-Item -Recurse -Force
