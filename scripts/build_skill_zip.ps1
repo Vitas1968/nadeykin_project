@@ -22,6 +22,7 @@ try {
     $ZipPath = Join-Path $ResolvedOutDir "tender-assistant-skill.zip"
     $StageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("tender-assistant-skill-stage-" + [System.Guid]::NewGuid().ToString("N"))
     $UserReadme = Join-Path $SkillDir "README_skill_zip_user.md"
+    $ResultsInterpretation = Join-Path $SkillDir "RESULTS_INTERPRETATION.md"
 
     if (-not (Test-Path $SkillDir)) {
         throw "Skill directory not found: $SkillDir"
@@ -39,6 +40,10 @@ try {
         throw "README_skill_zip_user.md not found in skill directory: $UserReadme"
     }
 
+    if (-not (Test-Path $ResultsInterpretation)) {
+    throw "RESULTS_INTERPRETATION.md not found in skill directory: $ResultsInterpretation"
+}
+
     # These folders are QA workspace placeholders; build staging stays in temp.
     New-Item -ItemType Directory -Force $ResolvedOutDir | Out-Null
     New-Item -ItemType Directory -Force (Join-Path $ResolvedOutDir "input") | Out-Null
@@ -47,6 +52,7 @@ try {
 
     Remove-Item -Force $ZipPath -ErrorAction SilentlyContinue
     Copy-Item $UserReadme (Join-Path $ResolvedOutDir "README_skill_zip_user.md") -Force
+    Copy-Item $ResultsInterpretation (Join-Path $ResolvedOutDir "RESULTS_INTERPRETATION.md") -Force
     New-Item -ItemType Directory -Force $StageDir | Out-Null
 
     $RequiredFiles = @(
