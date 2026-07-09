@@ -2,6 +2,7 @@
 .env
 outputs/
 out/
+resulting-artifacts/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
